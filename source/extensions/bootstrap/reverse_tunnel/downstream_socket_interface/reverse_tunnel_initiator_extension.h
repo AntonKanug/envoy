@@ -46,9 +46,8 @@ public:
     }
     if (config.has_http_handshake()) {
       for (const auto& header : config.http_handshake().additional_headers()) {
-        additional_headers_.emplace_back(
-            Http::LowerCaseString(header.header().key()),
-            header.header().value());
+        additional_headers_.emplace_back(Http::LowerCaseString(header.header().key()),
+                                         header.header().value());
       }
     }
     ENVOY_LOG(debug,

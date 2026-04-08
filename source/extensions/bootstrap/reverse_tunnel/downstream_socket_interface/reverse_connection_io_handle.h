@@ -310,8 +310,7 @@ public:
   /**
    * @return reference to the additional headers for the handshake request.
    */
-  const std::vector<std::pair<Http::LowerCaseString, std::string>>&
-  additionalHeaders() const {
+  const std::vector<std::pair<Http::LowerCaseString, std::string>>& additionalHeaders() const {
     return config_.additional_headers;
   }
 

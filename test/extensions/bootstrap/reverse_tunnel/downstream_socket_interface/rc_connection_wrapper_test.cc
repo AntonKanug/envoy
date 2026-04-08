@@ -336,10 +336,8 @@ TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeWithAdditionalHeaders) {
   auto mock_host = std::make_shared<NiceMock<Upstream::MockHostDescription>>();
 
   ReverseConnectionSocketConfig custom_config = createDefaultTestConfig();
-  custom_config.additional_headers.emplace_back(
-      Http::LowerCaseString("x-custom-auth"), "token123");
-  custom_config.additional_headers.emplace_back(
-      Http::LowerCaseString("x-request-id"), "abc-def");
+  custom_config.additional_headers.emplace_back(Http::LowerCaseString("x-custom-auth"), "token123");
+  custom_config.additional_headers.emplace_back(Http::LowerCaseString("x-request-id"), "abc-def");
   auto local_io_handle = createTestIOHandle(custom_config);
 
   RCConnectionWrapper wrapper(*local_io_handle, std::move(mock_connection), mock_host,
