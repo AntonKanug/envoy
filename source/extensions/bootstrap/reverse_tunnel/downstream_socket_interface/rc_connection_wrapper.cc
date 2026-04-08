@@ -139,6 +139,9 @@ std::string RCConnectionWrapper::connect(const std::string& src_tenant_id,
   headers->addCopy(cluster_hdr, std::string(cluster_id));
   headers->addCopy(tenant_hdr, std::string(tenant_id));
   headers->addCopy(upstream_cluster_hdr, cluster_name_);
+  for (const auto& [key, value] : parent_.additionalHeaders()) {
+    headers->addCopy(key, value);
+  }
   headers->setContentLength(0);
 
   // Encode via HTTP/1 codec.

@@ -44,6 +44,13 @@ public:
       handshake_request_path_ =
           std::string(ReverseConnectionUtility::DEFAULT_REVERSE_TUNNEL_REQUEST_PATH);
     }
+    if (config.has_http_handshake()) {
+      for (const auto& header : config.http_handshake().additional_headers()) {
+        additional_headers_.emplace_back(
+            Http::LowerCaseString(header.header().key()),
+            header.header().value());
+      }
+    }
     ENVOY_LOG(debug,
               "ReverseTunnelInitiatorExtension: creating downstream reverse connection "
               "socket interface with stat_prefix: {}",
@@ -106,6 +113,14 @@ public:
   const std::string& handshakeRequestPath() const { return handshake_request_path_; }
 
   /**
+   * @return reference to the additional headers to include in the handshake request.
+   */
+  const std::vector<std::pair<Http::LowerCaseString, std::string>>&
+  handshakeAdditionalHeaders() const {
+    return additional_headers_;
+  }
+
+  /**
    * Increment handshake stats for reverse tunnel connections (per-worker only).
    * Only tracks stats if enable_detailed_stats flag is true.
    * @param cluster_id the cluster identifier for the connection
@@ -134,6 +149,7 @@ private:
   std::string stat_prefix_; // Reverse connection stats prefix
   bool enable_detailed_stats_{false};
   std::string handshake_request_path_;
+  std::vector<std::pair<Http::LowerCaseString, std::string>> additional_headers_;
 
   /**
    * Update per-worker connection stats for debugging purposes.

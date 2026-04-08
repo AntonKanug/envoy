@@ -83,6 +83,8 @@ struct ReverseConnectionSocketConfig {
   std::string src_tenant_id;  // Tenant identifier of local envoy instance.
   std::string request_path{
       std::string(ReverseConnectionUtility::DEFAULT_REVERSE_TUNNEL_REQUEST_PATH)};
+  std::vector<std::pair<Http::LowerCaseString, std::string>>
+      additional_headers; // Additional headers for the handshake request.
   // TODO(basundhara-c): Add support for multiple remote clusters using the same
   // ReverseConnectionIOHandle. Currently, each ReverseConnectionIOHandle handles
   // reverse connections for a single upstream cluster since a different ReverseConnectionAddress
@@ -304,6 +306,14 @@ public:
    * @return reference to the configured HTTP handshake request path.
    */
   const std::string& requestPath() const { return config_.request_path; }
+
+  /**
+   * @return reference to the additional headers for the handshake request.
+   */
+  const std::vector<std::pair<Http::LowerCaseString, std::string>>&
+  additionalHeaders() const {
+    return config_.additional_headers;
+  }
 
 private:
   /**

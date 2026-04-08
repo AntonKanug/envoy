@@ -143,6 +143,28 @@ TEST_F(ReverseTunnelInitiatorExtensionTest, HandshakeRequestPathOverride) {
   EXPECT_EQ(custom_extension->handshakeRequestPath(), "/custom/handshake");
 }
 
+TEST_F(ReverseTunnelInitiatorExtensionTest, AdditionalHeadersDefaults) {
+  EXPECT_TRUE(extension_->handshakeAdditionalHeaders().empty());
+}
+
+TEST_F(ReverseTunnelInitiatorExtensionTest, AdditionalHeadersOverride) {
+  auto custom_config = config_;
+  auto* hdr1 = custom_config.mutable_http_handshake()->add_additional_headers();
+  hdr1->mutable_header()->set_key("x-custom-auth");
+  hdr1->mutable_header()->set_value("token123");
+  auto* hdr2 = custom_config.mutable_http_handshake()->add_additional_headers();
+  hdr2->mutable_header()->set_key("x-request-id");
+  hdr2->mutable_header()->set_value("abc-def");
+  auto custom_extension =
+      std::make_unique<ReverseTunnelInitiatorExtension>(context_, custom_config);
+  const auto& headers = custom_extension->handshakeAdditionalHeaders();
+  ASSERT_EQ(headers.size(), 2);
+  EXPECT_EQ(headers[0].first.get(), "x-custom-auth");
+  EXPECT_EQ(headers[0].second, "token123");
+  EXPECT_EQ(headers[1].first.get(), "x-request-id");
+  EXPECT_EQ(headers[1].second, "abc-def");
+}
+
 TEST_F(ReverseTunnelInitiatorExtensionTest, OnServerInitialized) {
   // This should be a no-op.
   extension_->onServerInitialized(server_);
