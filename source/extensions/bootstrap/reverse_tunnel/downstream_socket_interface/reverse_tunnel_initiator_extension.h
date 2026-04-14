@@ -45,11 +45,8 @@ public:
           std::string(ReverseConnectionUtility::DEFAULT_REVERSE_TUNNEL_REQUEST_PATH);
     }
     if (config.has_http_handshake()) {
-      for (const auto& header : config.http_handshake().additional_headers()) {
-        const auto& header_value = header.header();
-        additional_headers_.emplace_back(Http::LowerCaseString(header_value.key()),
-                                         header_value.value());
-      }
+      additional_headers_ = {config.http_handshake().additional_headers().begin(),
+                             config.http_handshake().additional_headers().end()};
     }
     ENVOY_LOG(debug,
               "ReverseTunnelInitiatorExtension: creating downstream reverse connection "
@@ -115,7 +112,7 @@ public:
   /**
    * @return reference to the additional headers to include in the handshake request.
    */
-  const std::vector<std::pair<Http::LowerCaseString, std::string>>&
+  const std::vector<envoy::config::core::v3::HeaderValueOption>&
   handshakeAdditionalHeaders() const {
     return additional_headers_;
   }
@@ -149,7 +146,7 @@ private:
   std::string stat_prefix_; // Reverse connection stats prefix
   bool enable_detailed_stats_{false};
   std::string handshake_request_path_;
-  std::vector<std::pair<Http::LowerCaseString, std::string>> additional_headers_;
+  std::vector<envoy::config::core::v3::HeaderValueOption> additional_headers_;
 
   /**
    * Update per-worker connection stats for debugging purposes.

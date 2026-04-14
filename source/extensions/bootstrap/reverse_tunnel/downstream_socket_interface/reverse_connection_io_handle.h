@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "envoy/config/core/v3/base.pb.h"
 #include "envoy/network/io_handle.h"
 #include "envoy/network/socket.h"
 #include "envoy/stats/scope.h"
@@ -83,7 +84,7 @@ struct ReverseConnectionSocketConfig {
   std::string src_tenant_id;  // Tenant identifier of local envoy instance.
   std::string request_path{
       std::string(ReverseConnectionUtility::DEFAULT_REVERSE_TUNNEL_REQUEST_PATH)};
-  std::vector<std::pair<Http::LowerCaseString, std::string>>
+  std::vector<envoy::config::core::v3::HeaderValueOption>
       additional_headers; // Additional headers for the handshake request.
   // TODO(basundhara-c): Add support for multiple remote clusters using the same
   // ReverseConnectionIOHandle. Currently, each ReverseConnectionIOHandle handles
@@ -310,7 +311,7 @@ public:
   /**
    * @return reference to the additional headers for the handshake request.
    */
-  const std::vector<std::pair<Http::LowerCaseString, std::string>>& additionalHeaders() const {
+  const std::vector<envoy::config::core::v3::HeaderValueOption>& additionalHeaders() const {
     return config_.additional_headers;
   }
 
