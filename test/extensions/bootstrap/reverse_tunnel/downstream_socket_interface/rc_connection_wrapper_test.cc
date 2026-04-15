@@ -405,6 +405,121 @@ TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeAdditionalHeadersOverwrite) 
   EXPECT_EQ(encoded_request.find("192.168.1.1:8080"), std::string::npos);
 }
 
+// Test ADD_IF_ABSENT: header is added when absent, skipped when present.
+TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeAdditionalHeadersAddIfAbsent) {
+  auto mock_connection = std::make_unique<NiceMock<Network::MockClientConnection>>();
+
+  EXPECT_CALL(*mock_connection, addConnectionCallbacks(_));
+  EXPECT_CALL(*mock_connection, addReadFilter(_));
+  EXPECT_CALL(*mock_connection, connect());
+  EXPECT_CALL(*mock_connection, id()).WillRepeatedly(Return(12345));
+  EXPECT_CALL(*mock_connection, state()).WillRepeatedly(Return(Network::Connection::State::Open));
+
+  auto mock_address = std::make_shared<Network::Address::Ipv4Instance>("192.168.1.1", 8080);
+  auto mock_local_address = std::make_shared<Network::Address::Ipv4Instance>("127.0.0.1", 12345);
+
+  EXPECT_CALL(*mock_connection, connectionInfoProvider())
+      .WillRepeatedly(Invoke([mock_address,
+                              mock_local_address]() -> const Network::ConnectionInfoProvider& {
+        static auto mock_provider =
+            std::make_unique<Network::ConnectionInfoSetterImpl>(mock_local_address, mock_address);
+        return *mock_provider;
+      }));
+
+  Buffer::OwnedImpl captured_buffer;
+  EXPECT_CALL(*mock_connection, write(_, _))
+      .WillOnce(Invoke([&captured_buffer](Buffer::Instance& buffer, bool) {
+        captured_buffer.add(buffer);
+        buffer.drain(buffer.length());
+      }));
+
+  auto mock_host = std::make_shared<NiceMock<Upstream::MockHostDescription>>();
+
+  ReverseConnectionSocketConfig custom_config = createDefaultTestConfig();
+  // Try to add "host" with ADD_IF_ABSENT — should be skipped since host already exists.
+  envoy::config::core::v3::HeaderValueOption hdr1;
+  hdr1.mutable_header()->set_key("host");
+  hdr1.mutable_header()->set_value("should-not-appear");
+  hdr1.set_append_action(envoy::config::core::v3::HeaderValueOption::ADD_IF_ABSENT);
+  custom_config.additional_headers.push_back(hdr1);
+  // Add a new header with ADD_IF_ABSENT — should be added since it doesn't exist.
+  envoy::config::core::v3::HeaderValueOption hdr2;
+  hdr2.mutable_header()->set_key("x-new-header");
+  hdr2.mutable_header()->set_value("new-value");
+  hdr2.set_append_action(envoy::config::core::v3::HeaderValueOption::ADD_IF_ABSENT);
+  custom_config.additional_headers.push_back(hdr2);
+  auto local_io_handle = createTestIOHandle(custom_config);
+
+  RCConnectionWrapper wrapper(*local_io_handle, std::move(mock_connection), mock_host,
+                              "test-cluster");
+
+  wrapper.connect("test-tenant", "test-cluster", "test-node");
+
+  const std::string encoded_request = captured_buffer.toString();
+  // "host" was already set, so ADD_IF_ABSENT should not add "should-not-appear".
+  EXPECT_EQ(encoded_request.find("should-not-appear"), std::string::npos);
+  // "x-new-header" was absent, so ADD_IF_ABSENT should add it.
+  EXPECT_NE(encoded_request.find("x-new-header: new-value"), std::string::npos);
+}
+
+// Test OVERWRITE_IF_EXISTS: overwrites existing header, does nothing for absent header.
+TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeAdditionalHeadersOverwriteIfExists) {
+  auto mock_connection = std::make_unique<NiceMock<Network::MockClientConnection>>();
+
+  EXPECT_CALL(*mock_connection, addConnectionCallbacks(_));
+  EXPECT_CALL(*mock_connection, addReadFilter(_));
+  EXPECT_CALL(*mock_connection, connect());
+  EXPECT_CALL(*mock_connection, id()).WillRepeatedly(Return(12345));
+  EXPECT_CALL(*mock_connection, state()).WillRepeatedly(Return(Network::Connection::State::Open));
+
+  auto mock_address = std::make_shared<Network::Address::Ipv4Instance>("192.168.1.1", 8080);
+  auto mock_local_address = std::make_shared<Network::Address::Ipv4Instance>("127.0.0.1", 12345);
+
+  EXPECT_CALL(*mock_connection, connectionInfoProvider())
+      .WillRepeatedly(Invoke([mock_address,
+                              mock_local_address]() -> const Network::ConnectionInfoProvider& {
+        static auto mock_provider =
+            std::make_unique<Network::ConnectionInfoSetterImpl>(mock_local_address, mock_address);
+        return *mock_provider;
+      }));
+
+  Buffer::OwnedImpl captured_buffer;
+  EXPECT_CALL(*mock_connection, write(_, _))
+      .WillOnce(Invoke([&captured_buffer](Buffer::Instance& buffer, bool) {
+        captured_buffer.add(buffer);
+        buffer.drain(buffer.length());
+      }));
+
+  auto mock_host = std::make_shared<NiceMock<Upstream::MockHostDescription>>();
+
+  ReverseConnectionSocketConfig custom_config = createDefaultTestConfig();
+  // Overwrite "host" which exists — should replace the value.
+  envoy::config::core::v3::HeaderValueOption hdr1;
+  hdr1.mutable_header()->set_key("host");
+  hdr1.mutable_header()->set_value("overwritten-host");
+  hdr1.set_append_action(envoy::config::core::v3::HeaderValueOption::OVERWRITE_IF_EXISTS);
+  custom_config.additional_headers.push_back(hdr1);
+  // Try to overwrite "x-nonexistent" which doesn't exist — should be a no-op.
+  envoy::config::core::v3::HeaderValueOption hdr2;
+  hdr2.mutable_header()->set_key("x-nonexistent");
+  hdr2.mutable_header()->set_value("should-not-appear");
+  hdr2.set_append_action(envoy::config::core::v3::HeaderValueOption::OVERWRITE_IF_EXISTS);
+  custom_config.additional_headers.push_back(hdr2);
+  auto local_io_handle = createTestIOHandle(custom_config);
+
+  RCConnectionWrapper wrapper(*local_io_handle, std::move(mock_connection), mock_host,
+                              "test-cluster");
+
+  wrapper.connect("test-tenant", "test-cluster", "test-node");
+
+  const std::string encoded_request = captured_buffer.toString();
+  // "host" existed, so OVERWRITE_IF_EXISTS should replace it.
+  EXPECT_NE(encoded_request.find("host: overwritten-host"), std::string::npos);
+  EXPECT_EQ(encoded_request.find("192.168.1.1:8080"), std::string::npos);
+  // "x-nonexistent" didn't exist, so OVERWRITE_IF_EXISTS should not add it.
+  EXPECT_EQ(encoded_request.find("should-not-appear"), std::string::npos);
+}
+
 // Test RCConnectionWrapper::connect() method with connection write failure.
 TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeWriteFailure) {
   // Create a mock connection that fails to write.
