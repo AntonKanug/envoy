@@ -162,6 +162,7 @@ pub trait NetworkFilter<ENF: EnvoyNetworkFilter> {
 
 /// The trait that represents the Envoy network filter.
 /// This is used in [`NetworkFilter`] to interact with the underlying Envoy network filter object.
+#[automock]
 pub trait EnvoyNetworkFilter {
   /// Get the read buffer chunks. This is valid after the first on_read callback for the lifetime
   /// of the connection.
