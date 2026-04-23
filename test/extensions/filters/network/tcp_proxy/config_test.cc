@@ -75,9 +75,6 @@ TEST(ConfigTest, ConfigTest) {
   cb(connection);
 }
 
-// Test that TunnelingConfig with a populated formatters field wires the extension through. Uses
-// the shared TestCommandFactory fake (see test/common/formatter/command_extension.h) so this test
-// does not depend on any real formatter extension's availability.
 TEST(ConfigTest, TunnelingConfigWithFormatters) {
   Envoy::Formatter::TestCommandFactory test_factory;
   Registry::InjectFactory<Envoy::Formatter::CommandParserFactory> register_factory(test_factory);
@@ -104,7 +101,6 @@ TEST(ConfigTest, TunnelingConfigWithFormatters) {
   EXPECT_TRUE(factory.createFilterFactoryFromProto(config, context).ok());
 }
 
-// Test that a TunnelingConfig referencing an unknown formatter extension fails at config time.
 TEST(ConfigTest, TunnelingConfigWithUnknownFormatter) {
   NiceMock<Server::Configuration::MockFactoryContext> context;
   ConfigFactory factory;
