@@ -1,10 +1,15 @@
 #include "source/extensions/filters/network/tcp_bandwidth_limit/tcp_bandwidth_limit.h"
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/common/exception.h"
 #include "envoy/event/dispatcher.h"
 #include "envoy/network/connection.h"
 
 #include "source/common/common/assert.h"
+#include "source/common/common/fmt.h"
+#include "source/common/common/shared_token_bucket_impl.h"
+#include "source/extensions/common/distributed_token_bucket/distributed_token_bucket.h"
+#include "source/extensions/common/distributed_token_bucket/lease_fetcher_factory.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -15,12 +20,61 @@ namespace {
 constexpr uint64_t kiloBytesToBytes(uint64_t val) { return val * 1024; }
 constexpr int64_t RateUpdateIntervalMs = 1000;
 constexpr uint64_t MillisecondsPerSecond = 1000;
+constexpr uint64_t DefaultLeaseKb = 64;
+
+std::shared_ptr<TokenBucket> makeBucket(
+    bool has_limit, uint64_t limit_kbps,
+    const envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit& proto,
+    Stats::Scope& scope, TimeSource& time_source, Upstream::ClusterManager& cluster_manager,
+    Event::Dispatcher& dispatcher) {
+  if (!has_limit) {
+    return nullptr;
+  }
+  const uint64_t rate_bps = kiloBytesToBytes(limit_kbps);
+
+  if (!proto.has_distributed()) {
+    return std::make_shared<SharedTokenBucketImpl>(rate_bps, time_source,
+                                                   static_cast<double>(rate_bps));
+  }
+
+  const auto& dist = proto.distributed();
+  const uint64_t lease_kb =
+      dist.has_lease_kb() ? dist.lease_kb().value() : DefaultLeaseKb;
+  const uint64_t lease_size = kiloBytesToBytes(lease_kb);
+  Extensions::Common::DistributedTokenBucket::DistributedTokenBucketConfig dt_config{
+      /*lease_size=*/lease_size,
+      /*low_watermark=*/lease_size / 4,
+      /*fail_open_rate_tokens_per_sec=*/rate_bps,
+      /*fail_open=*/dist.fail_open(),
+      /*retry_interval=*/std::chrono::milliseconds(1000),
+  };
+
+  Extensions::Common::DistributedTokenBucket::LeaseFetcherFactoryContext fetcher_ctx{
+      cluster_manager,
+      dispatcher,
+      scope,
+      time_source,
+      /*rate_tokens_per_sec=*/rate_bps,
+      /*op_timeout=*/std::chrono::seconds(1),
+  };
+  auto fetcher_or = Extensions::Common::DistributedTokenBucket::LeaseFetcherFactoryRegistry::create(
+      fetcher_ctx, dist.cluster(), dist.key());
+  if (!fetcher_or.ok()) {
+    throw EnvoyException(
+        fmt::format("tcp_bandwidth_limit: distributed mode misconfigured: {}",
+                    fetcher_or.status().message()));
+  }
+
+  return std::make_shared<Extensions::Common::DistributedTokenBucket::DistributedTokenBucket>(
+      dt_config, std::move(*fetcher_or), time_source);
+}
 
 } // namespace
 
 FilterConfig::FilterConfig(
     const envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit& config,
-    Stats::Scope& scope, Runtime::Loader& runtime, TimeSource& time_source)
+    Stats::Scope& scope, Runtime::Loader& runtime, TimeSource& time_source,
+    Upstream::ClusterManager& cluster_manager, Event::Dispatcher& dispatcher)
     : runtime_(runtime), time_source_(time_source),
       read_limit_kbps_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, read_limit_kbps, 0)),
       write_limit_kbps_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, write_limit_kbps, 0)),
@@ -30,17 +84,13 @@ FilterConfig::FilterConfig(
       stats_(generateStats(config.stat_prefix(), scope)),
       // The token bucket is configured with a max token count of the number of
       // bytes per second, and refills at the same rate, so that we have a per
-      // second limit which refills gradually over the fill interval.
-      read_token_bucket_(config.has_read_limit_kbps()
-                             ? std::make_shared<SharedTokenBucketImpl>(
-                                   kiloBytesToBytes(read_limit_kbps_), time_source_,
-                                   static_cast<double>(kiloBytesToBytes(read_limit_kbps_)))
-                             : nullptr),
-      write_token_bucket_(config.has_write_limit_kbps()
-                              ? std::make_shared<SharedTokenBucketImpl>(
-                                    kiloBytesToBytes(write_limit_kbps_), time_source_,
-                                    static_cast<double>(kiloBytesToBytes(write_limit_kbps_)))
-                              : nullptr) {}
+      // second limit which refills gradually over the fill interval. When the
+      // proto sets ``distributed``, the bucket is replaced with a remote-leased
+      // implementation sharing state across processes.
+      read_token_bucket_(makeBucket(config.has_read_limit_kbps(), read_limit_kbps_, config, scope,
+                                    time_source_, cluster_manager, dispatcher)),
+      write_token_bucket_(makeBucket(config.has_write_limit_kbps(), write_limit_kbps_, config,
+                                     scope, time_source_, cluster_manager, dispatcher)) {}
 
 TcpBandwidthLimitStats FilterConfig::generateStats(const std::string& prefix, Stats::Scope& scope) {
   const std::string final_prefix = prefix + ".tcp_bandwidth_limit";

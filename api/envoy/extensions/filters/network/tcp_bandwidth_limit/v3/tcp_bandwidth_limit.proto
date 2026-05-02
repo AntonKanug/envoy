@@ -20,7 +20,32 @@ option (udpa.annotations.file_status).package_version_status = ACTIVE;
 // TCP Bandwidth Limit :ref:`configuration overview <config_network_filters_tcp_bandwidth_limit>`.
 // [#extension: envoy.filters.network.tcp_bandwidth_limit]
 
-// [#next-free-field: 6]
+// Distributed (cross-process) bandwidth limit configuration. When set, the
+// filter uses a leased token bucket backed by an external store (e.g. Redis)
+// shared across multiple Envoy instances. The local ``read_limit_kbps`` /
+// ``write_limit_kbps`` values are still used as the per-instance fallback rate
+// when ``fail_open`` is true and the remote store is unreachable.
+message DistributedBandwidthLimit {
+  // Name of the upstream cluster that hosts the remote bucket store (Redis).
+  string cluster = 1 [(validate.rules).string = {min_len: 1}];
+
+  // Bucket key in the remote store. Two Envoy fleets sharing this key share
+  // the same global rate.
+  string key = 2 [(validate.rules).string = {min_len: 1}];
+
+  // Local lease size in KiB. Each refill from the remote store tops the local
+  // bucket back up toward this size. Larger leases reduce remote QPS but
+  // increase the worst-case over-allow when many instances refill in parallel.
+  // Defaults to 64.
+  google.protobuf.UInt64Value lease_kb = 3;
+
+  // If true (default), fall back to a local token bucket at the configured
+  // per-instance rate when the remote store is unreachable. If false, the
+  // filter buffers / backpressures until the store recovers.
+  bool fail_open = 4;
+}
+
+// [#next-free-field: 7]
 message TcpBandwidthLimit {
   // The human readable prefix to use when emitting stats.
   string stat_prefix = 1 [(validate.rules).string = {min_len: 1}];
@@ -45,4 +70,10 @@ message TcpBandwidthLimit {
   // Runtime flag that controls whether the filter is enabled or not. If not specified, defaults
   // to enabled.
   config.core.v3.RuntimeFeatureFlag runtime_enabled = 5;
+
+  // When set, the read / write limits are enforced via a remote leased token
+  // bucket (typically Redis-backed) shared across multiple Envoy instances.
+  // ``read_limit_kbps`` / ``write_limit_kbps`` are interpreted as the global
+  // rate; the same rate is used as the fail-open fallback per instance.
+  DistributedBandwidthLimit distributed = 6;
 }

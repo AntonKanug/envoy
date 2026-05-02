@@ -3,6 +3,7 @@
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/runtime/mocks.h"
+#include "test/mocks/upstream/cluster_manager.h"
 #include "test/test_common/simulated_time_system.h"
 #include "test/test_common/utility.h"
 
@@ -32,7 +33,7 @@ public:
     TestUtility::loadFromYaml(yaml, proto_config);
 
     config_ = std::make_shared<FilterConfig>(proto_config, *stats_store_.rootScope(), runtime_,
-                                             time_source_);
+                                             time_source_, cluster_manager_, dispatcher_);
     filter_ = std::make_unique<TcpBandwidthLimitFilter>(config_);
 
     // Set a buffer limit so the WatermarkBuffer watermarks are active.
@@ -45,6 +46,8 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   Stats::IsolatedStoreImpl stats_store_;
   Event::SimulatedTimeSystem time_source_;
+  NiceMock<Upstream::MockClusterManager> cluster_manager_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
   NiceMock<Network::MockReadFilterCallbacks> read_filter_callbacks_;
   NiceMock<Network::MockWriteFilterCallbacks> write_filter_callbacks_;
   FilterConfigSharedPtr config_;
@@ -276,7 +279,7 @@ TEST_F(TcpBandwidthLimitFilterTest, FillIntervalValidation) {
   FilterConfigSharedPtr config2 = std::make_shared<FilterConfig>(
       TestUtility::parseYaml<
           envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit>(yaml2),
-      *stats_store_.rootScope(), runtime_, time_source_);
+      *stats_store_.rootScope(), runtime_, time_source_, cluster_manager_, dispatcher_);
   EXPECT_EQ(std::chrono::milliseconds(1000), config2->fillInterval());
 }
 
