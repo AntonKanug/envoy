@@ -41,33 +41,49 @@ The following example configuration limits read bandwidth to 1 MiB/s and write b
 Distributed mode
 ----------------
 
-By default each Envoy enforces ``read_limit_kbps`` / ``write_limit_kbps`` independently
-in-process: with ``N`` Envoys you get ``N`` × the limit aggregate. To share a single
-limit across all instances, set the
+By default each Envoy enforces ``read_limit_kbps`` / ``write_limit_kbps``
+independently in-process: with ``N`` Envoys you get ``N`` × the limit aggregate.
+To share a single limit across all instances, set the
 :ref:`distributed <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.TcpBandwidthLimit.distributed>`
-field. The filter then enforces the limit via a leased token bucket backed by a
-Redis-typed upstream cluster shared across the fleet.
+field. The filter then enforces the limit via a leased token bucket fetched
+from an external **bandwidth quota gRPC service** shared across the fleet.
+
+The service is a small standalone gRPC server implementing
+``envoy.extensions.distributed_token_bucket.v3.BandwidthQuotaService.AcquireLease``;
+the reference implementation backs the bucket with Redis. Envoy itself does
+not speak to Redis directly — it talks gRPC to the service, the service talks
+Redis. This matches the same shape as the rate-limit, ext-authz and ext-proc
+data-plane callouts and inherits Envoy's standard gRPC client features (mTLS,
+retries, outlier detection, cluster pooling).
 
 How it works:
 
-* Each Envoy keeps a small **local lease** of tokens (default 64 KiB, configurable
-  via :ref:`lease_kb <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.lease_kb>`).
-  Reads/writes draw from this lease synchronously.
-* When the local lease drops below a threshold an asynchronous ``EVAL`` is dispatched
-  against the configured Redis cluster to atomically advance a global counter for
-  the bucket :ref:`key <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.key>`.
-* Two Envoys configured with the same ``key`` against the same Redis share one
-  bucket; ``read_limit_kbps`` / ``write_limit_kbps`` are interpreted as the
-  *global* rate.
-* If the Redis cluster is unreachable and
+* Each Envoy keeps a small **local lease** of tokens. Reads/writes draw from
+  this lease synchronously inside the worker thread.
+* When the local lease drops below a threshold an asynchronous ``AcquireLease``
+  RPC is dispatched against the configured
+  :ref:`quota_service <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.quota_service>`.
+  The service atomically advances the global bucket and returns the granted
+  token count.
+* Read and write directions automatically use **different bucket keys**: the
+  ``key`` you configure is suffixed with ``:read`` and ``:write`` so the two
+  directions track independent global pools and never collide on a single
+  global counter.
+* If
+  :ref:`lease_kb <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.lease_kb>`
+  is unset, an automatic value is derived from the configured rate (~ one
+  ``fill_interval``'s worth of bandwidth) and clamped to ``[64 KiB, 16 MiB]``.
+* If the quota service is unreachable and
   :ref:`fail_open <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.fail_open>`
-  is ``true`` (the default), each Envoy falls back to the per-instance rate
-  defined by ``read_limit_kbps`` / ``write_limit_kbps`` until Redis recovers.
-  If ``fail_open`` is ``false`` traffic is buffered / backpressured.
+  is ``true``, each Envoy falls back to a local-only token bucket at
+  :ref:`fail_open_kbps <envoy_v3_api_field_extensions.filters.network.tcp_bandwidth_limit.v3.DistributedBandwidthLimit.fail_open_kbps>`
+  per instance. ``fail_open`` defaults to ``false`` (the safer choice for
+  distributed semantics — when ``true``, an outage allows N × the configured
+  fallback rate until recovery).
 
 The bucket is approximate: with ``N`` instances and lease size ``L`` the total
 delivery may exceed the global limit by up to ``N`` × ``L`` during refill bursts.
-Smaller leases narrow the window at the cost of higher Redis QPS.
+Smaller leases narrow the window at the cost of higher service QPS.
 
 Example: 1 MiB/s shared across all Envoys keyed by tenant:
 
@@ -80,15 +96,28 @@ Example: 1 MiB/s shared across all Envoys keyed by tenant:
     read_limit_kbps: 1024   # 1 MiB/s GLOBAL
     write_limit_kbps: 1024
     distributed:
-      cluster: redis_bucket_cluster
+      quota_service:
+        envoy_grpc:
+          cluster_name: bandwidth_quota_cluster
       key: tenant.acme.bandwidth
-      lease_kb: 64
-      fail_open: true
+      fail_open: false
 
-The ``cluster`` must be an Envoy upstream cluster reachable from the main thread
-dispatcher; standard Redis cluster types (``STATIC``, ``STRICT_DNS``, ``LOGICAL_DNS``)
-all work. TLS, AWS IAM, and other auth modes follow the cluster's transport socket
-configuration.
+The ``quota_service`` is a standard
+:ref:`GrpcService <envoy_v3_api_msg_config.core.v3.GrpcService>` reference, so
+mTLS, retries and any other transport-socket / cluster configuration are owned
+by the cluster.
+
+In addition to the regular per-direction stats, distributed mode emits a set
+of stats under ``<stat_prefix>.distributed_bandwidth_limit.``:
+
+.. csv-table::
+  :header: Name, Type, Description
+  :widths: 1, 1, 2
+
+  lease_requests_total, Counter, Number of AcquireLease calls dispatched
+  lease_failures_total, Counter, Number of AcquireLease calls that failed (transport error or non-OK status)
+  lease_granted_bytes_total, Counter, Sum of granted_tokens across successful calls
+  fail_open_active, Gauge, 1 while the bucket is operating in fail-open fallback, 0 otherwise
 
 Statistics
 ----------

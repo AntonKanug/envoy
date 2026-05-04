@@ -2,6 +2,7 @@
 #include <utility>
 #include <vector>
 
+#include "source/common/stats/isolated_store_impl.h"
 #include "source/extensions/common/distributed_token_bucket/distributed_token_bucket.h"
 #include "source/extensions/common/distributed_token_bucket/lease_fetcher.h"
 
@@ -61,6 +62,7 @@ protected:
         /*fail_open_rate_tokens_per_sec=*/100,
         /*fail_open=*/true,
         /*retry_interval=*/std::chrono::milliseconds(100),
+        /*stats=*/nullptr,
     };
   }
 
@@ -171,6 +173,10 @@ TEST_F(DistributedTokenBucketTest, FailOpenRetriesAfterIntervalAndExitsOnSuccess
   bucket->consume(0, true);
   EXPECT_EQ(1, fetcher_->pendingCount());
 
+  // B3 regression: the retry must request a real lease (lease_size), not 0.
+  // If it asked for 0, the next consume would stall with an empty local lease.
+  EXPECT_EQ(1000, fetcher_->lastRequested());
+
   // Successful retry exits fail-open mode and tops up the lease.
   fetcher_->respondSuccess(1000);
   EXPECT_FALSE(bucket->failOpenActiveForTest());
@@ -247,6 +253,100 @@ TEST_F(DistributedTokenBucketTest, NextTokenAvailableReportsRetryIntervalWhenEmp
   auto bucket = makeBucket(cfg);
   // No tokens, no successful fetch yet.
   EXPECT_EQ(std::chrono::milliseconds(250), bucket->nextTokenAvailable());
+}
+
+// D9 regression: maybeReset must SET the local count, not clamp downward.
+TEST_F(DistributedTokenBucketTest, MaybeResetSetsLocalCount) {
+  auto bucket = makeBucket(defaultConfig());
+
+  bucket->consume(0, true);
+  fetcher_->respondSuccess(500);
+  ASSERT_EQ(500, bucket->localLeaseForTest());
+
+  // The old implementation clamped via std::min, so reset(900) would have left
+  // the count at 500. The contract is to *set* the count to 900.
+  bucket->maybeReset(900);
+  EXPECT_EQ(900, bucket->localLeaseForTest());
+
+  // And reset can also lower the count, as before.
+  bucket->maybeReset(100);
+  EXPECT_EQ(100, bucket->localLeaseForTest());
+}
+
+// Regression: a "successful" lease that grants 0 tokens (remote bucket empty)
+// must NOT exit fail-open mode. Otherwise the bucket would drop its fallback,
+// reset local_tokens_ to 0, and stall the next consume.
+TEST_F(DistributedTokenBucketTest, FailOpenStaysActiveOnZeroGrant) {
+  auto bucket = makeBucket(defaultConfig());
+
+  // Enter fail-open by failing a fetch.
+  bucket->consume(0, true);
+  ASSERT_EQ(1, fetcher_->pendingCount());
+  fetcher_->respondFailure();
+  ASSERT_TRUE(bucket->failOpenActiveForTest());
+
+  // Cross retry interval and trigger a retry.
+  time_system_.advanceTimeWait(std::chrono::milliseconds(150));
+  bucket->consume(0, true);
+  ASSERT_EQ(1, fetcher_->pendingCount());
+
+  // Remote responds OK with 0 tokens (bucket is genuinely drained globally).
+  fetcher_->respondSuccess(0);
+
+  // Bucket should still be in fail-open mode; otherwise we'd be stuck with an
+  // empty local lease and no fallback.
+  EXPECT_TRUE(bucket->failOpenActiveForTest());
+  EXPECT_EQ(0, bucket->localLeaseForTest());
+
+  // The fallback bucket must still be operational. Advance time by 1s; at
+  // fail_open_rate_tokens_per_sec=100 the fallback should accumulate ~100
+  // tokens. A consume against the fallback should return them. If the
+  // fallback had been silently dropped during the zero-grant path, this
+  // would return 0 — which is the regression we're guarding against.
+  time_system_.advanceTimeWait(std::chrono::seconds(1));
+  EXPECT_EQ(50, bucket->consume(50, true));
+
+  // A subsequent retry that returns >0 grants should finally exit fail-open.
+  time_system_.advanceTimeWait(std::chrono::milliseconds(150));
+  bucket->consume(0, true);
+  ASSERT_EQ(1, fetcher_->pendingCount());
+  fetcher_->respondSuccess(500);
+  EXPECT_FALSE(bucket->failOpenActiveForTest());
+  EXPECT_EQ(500, bucket->localLeaseForTest());
+}
+
+// D7: emit stats while the bucket is in use; verify counters move.
+TEST_F(DistributedTokenBucketTest, StatsTrackLeaseActivity) {
+  Stats::IsolatedStoreImpl store;
+  auto stats = generateDistributedBucketStats("bw", *store.rootScope());
+
+  auto cfg = defaultConfig();
+  cfg.stats = &stats;
+  auto bucket = makeBucket(cfg);
+
+  // First consume kicks a fetch.
+  bucket->consume(100, true);
+  EXPECT_EQ(1, stats.lease_requests_total_.value());
+  EXPECT_EQ(0, stats.lease_granted_bytes_total_.value());
+
+  // Successful fetch increments granted bytes.
+  fetcher_->respondSuccess(800);
+  EXPECT_EQ(800, stats.lease_granted_bytes_total_.value());
+  EXPECT_EQ(0, stats.lease_failures_total_.value());
+  EXPECT_EQ(0, stats.fail_open_active_.value());
+
+  // Drain below watermark to trigger another fetch, then fail it.
+  bucket->consume(700, true);  // 800 - 700 = 100, below low_watermark=200
+  EXPECT_EQ(2, stats.lease_requests_total_.value());
+  fetcher_->respondFailure();
+  EXPECT_EQ(1, stats.lease_failures_total_.value());
+  EXPECT_EQ(1, stats.fail_open_active_.value());
+
+  // Recovery clears the gauge.
+  time_system_.advanceTimeWait(std::chrono::milliseconds(150));
+  bucket->consume(0, true);
+  fetcher_->respondSuccess(1000);
+  EXPECT_EQ(0, stats.fail_open_active_.value());
 }
 
 } // namespace

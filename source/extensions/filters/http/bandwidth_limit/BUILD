@@ -29,8 +29,6 @@ envoy_cc_library(
         "//source/common/router:header_parser_lib",
         "//source/common/runtime:runtime_lib",
         "//source/common/stats:timespan_lib",
-        "//source/extensions/common/distributed_token_bucket:distributed_token_bucket_lib",
-        "//source/extensions/common/distributed_token_bucket:lease_fetcher_factory_lib",
         "//source/extensions/filters/http/common:stream_rate_limiter_lib",
         "@envoy_api//envoy/extensions/filters/http/bandwidth_limit/v3:pkg_cc_proto",
     ],

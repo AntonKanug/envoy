@@ -5,18 +5,18 @@
 
 #include "envoy/common/time.h"
 #include "envoy/common/token_bucket.h"
-#include "envoy/event/dispatcher.h"
 #include "envoy/event/timer.h"
 #include "envoy/extensions/filters/network/tcp_bandwidth_limit/v3/tcp_bandwidth_limit.pb.h"
 #include "envoy/network/filter.h"
 #include "envoy/runtime/runtime.h"
+#include "envoy/server/factory_context.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
-#include "envoy/upstream/cluster_manager.h"
 
 #include "source/common/buffer/watermark_buffer.h"
 #include "source/common/common/logger.h"
 #include "source/common/runtime/runtime_protos.h"
+#include "source/extensions/common/distributed_token_bucket/distributed_token_bucket.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -52,8 +52,7 @@ class FilterConfig {
 public:
   FilterConfig(
       const envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit& config,
-      Stats::Scope& scope, Runtime::Loader& runtime, TimeSource& time_source,
-      Upstream::ClusterManager& cluster_manager, Event::Dispatcher& dispatcher);
+      Stats::Scope& scope, Server::Configuration::ServerFactoryContext& server_ctx);
 
   Runtime::Loader& runtime() { return runtime_; }
   TcpBandwidthLimitStats& stats() { return stats_; }
@@ -78,6 +77,10 @@ private:
   const std::chrono::milliseconds fill_interval_;
   const Runtime::FeatureFlag enabled_;
   TcpBandwidthLimitStats stats_;
+  // Distributed-mode stats. Allocated lazily only when proto.has_distributed()
+  // so the stat namespace stays clean for purely-local configs.
+  std::unique_ptr<Extensions::Common::DistributedTokenBucket::DistributedBucketStats>
+      distributed_stats_;
   std::shared_ptr<TokenBucket> read_token_bucket_;
   std::shared_ptr<TokenBucket> write_token_bucket_;
 };

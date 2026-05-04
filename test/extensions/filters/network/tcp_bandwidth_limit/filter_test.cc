@@ -3,6 +3,7 @@
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/runtime/mocks.h"
+#include "test/mocks/server/factory_context.h"
 #include "test/mocks/upstream/cluster_manager.h"
 #include "test/test_common/simulated_time_system.h"
 #include "test/test_common/utility.h"
@@ -32,8 +33,8 @@ public:
     envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit proto_config;
     TestUtility::loadFromYaml(yaml, proto_config);
 
-    config_ = std::make_shared<FilterConfig>(proto_config, *stats_store_.rootScope(), runtime_,
-                                             time_source_, cluster_manager_, dispatcher_);
+    config_ = std::make_shared<FilterConfig>(proto_config, *stats_store_.rootScope(),
+                                             server_factory_context_);
     filter_ = std::make_unique<TcpBandwidthLimitFilter>(config_);
 
     // Set a buffer limit so the WatermarkBuffer watermarks are active.
@@ -46,8 +47,7 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   Stats::IsolatedStoreImpl stats_store_;
   Event::SimulatedTimeSystem time_source_;
-  NiceMock<Upstream::MockClusterManager> cluster_manager_;
-  NiceMock<Event::MockDispatcher> dispatcher_;
+  NiceMock<Server::Configuration::MockServerFactoryContext> server_factory_context_;
   NiceMock<Network::MockReadFilterCallbacks> read_filter_callbacks_;
   NiceMock<Network::MockWriteFilterCallbacks> write_filter_callbacks_;
   FilterConfigSharedPtr config_;
@@ -279,7 +279,7 @@ TEST_F(TcpBandwidthLimitFilterTest, FillIntervalValidation) {
   FilterConfigSharedPtr config2 = std::make_shared<FilterConfig>(
       TestUtility::parseYaml<
           envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit>(yaml2),
-      *stats_store_.rootScope(), runtime_, time_source_, cluster_manager_, dispatcher_);
+      *stats_store_.rootScope(), server_factory_context_);
   EXPECT_EQ(std::chrono::milliseconds(1000), config2->fillInterval());
 }
 
@@ -373,8 +373,8 @@ TEST_F(TcpBandwidthLimitFilterTest, ConfigAccessors) {
   EXPECT_EQ(std::chrono::milliseconds(100), config_->fillInterval());
   EXPECT_TRUE(config_->enabled());
 
-  EXPECT_EQ(&runtime_, &config_->runtime());
-  EXPECT_EQ(&time_source_, &config_->timeSource());
+  EXPECT_EQ(&server_factory_context_.runtime_loader_, &config_->runtime());
+  EXPECT_EQ(&server_factory_context_.time_system_, &config_->timeSource());
 
   const std::string yaml_no_limits = R"EOF(
     stat_prefix: test

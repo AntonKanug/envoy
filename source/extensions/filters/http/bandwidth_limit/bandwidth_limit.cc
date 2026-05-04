@@ -6,12 +6,9 @@
 #include "envoy/common/exception.h"
 #include "envoy/http/codes.h"
 
-#include "source/common/common/fmt.h"
 #include "source/common/common/shared_token_bucket_impl.h"
 #include "source/common/http/utility.h"
 #include "source/common/stats/timespan_impl.h"
-#include "source/extensions/common/distributed_token_bucket/distributed_token_bucket.h"
-#include "source/extensions/common/distributed_token_bucket/lease_fetcher_factory.h"
 
 using envoy::extensions::filters::http::bandwidth_limit::v3::BandwidthLimit;
 using Envoy::Extensions::HttpFilters::Common::StreamRateLimiter;
@@ -81,44 +78,10 @@ FilterConfig::FilterConfig(const BandwidthLimit& config, Stats::Scope& scope,
 
   // The token bucket is configured with a max token count of the number of
   // bytes per second, and refills at the same rate, so that we have a per
-  // second limit which refills gradually in 1/fill_interval increments. When
-  // the proto sets ``distributed``, the bucket is replaced with a remote-leased
-  // implementation sharing state across processes.
+  // second limit which refills gradually in 1/fill_interval increments.
   uint64_t max_tokens = StreamRateLimiter::kiloBytesToBytes(limit_kbps_);
-
-  if (!config.has_distributed()) {
-    token_bucket_ = std::make_shared<SharedTokenBucketImpl>(max_tokens, time_source, max_tokens);
-    token_bucket_->maybeReset(max_tokens * fill_interval_.count() / 1000);
-    return;
-  }
-
-  const auto& dist = config.distributed();
-  constexpr uint64_t DefaultLeaseKb = 64;
-  const uint64_t lease_kb =
-      dist.has_lease_kb() ? dist.lease_kb().value() : DefaultLeaseKb;
-  const uint64_t lease_size = StreamRateLimiter::kiloBytesToBytes(lease_kb);
-
-  Extensions::Common::DistributedTokenBucket::DistributedTokenBucketConfig dt_config{
-      /*lease_size=*/lease_size,
-      /*low_watermark=*/lease_size / 4,
-      /*fail_open_rate_tokens_per_sec=*/max_tokens,
-      /*fail_open=*/dist.fail_open(),
-      /*retry_interval=*/std::chrono::milliseconds(1000),
-  };
-
-  auto fetcher_or =
-      Extensions::Common::DistributedTokenBucket::LeaseFetcherFactoryRegistry::create(
-          dist.cluster(), dist.key());
-  if (!fetcher_or.ok()) {
-    creation_status = absl::InvalidArgumentError(
-        fmt::format("http bandwidth_limit: distributed mode misconfigured: {}",
-                    fetcher_or.status().message()));
-    return;
-  }
-
-  token_bucket_ =
-      std::make_shared<Extensions::Common::DistributedTokenBucket::DistributedTokenBucket>(
-          dt_config, std::move(*fetcher_or), time_source);
+  token_bucket_ = std::make_shared<SharedTokenBucketImpl>(max_tokens, time_source, max_tokens);
+  token_bucket_->maybeReset(max_tokens * fill_interval_.count() / 1000);
 }
 
 BandwidthLimitStats FilterConfig::generateStats(const std::string& prefix, Stats::Scope& scope) {

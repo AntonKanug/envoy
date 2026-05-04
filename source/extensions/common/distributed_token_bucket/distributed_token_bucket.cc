@@ -7,6 +7,13 @@ namespace Extensions {
 namespace Common {
 namespace DistributedTokenBucket {
 
+DistributedBucketStats generateDistributedBucketStats(const std::string& prefix,
+                                                     Stats::Scope& scope) {
+  const std::string final_prefix = prefix + ".distributed_bandwidth_limit";
+  return {ALL_DISTRIBUTED_BUCKET_STATS(POOL_COUNTER_PREFIX(scope, final_prefix),
+                                       POOL_GAUGE_PREFIX(scope, final_prefix))};
+}
+
 DistributedTokenBucket::DistributedTokenBucket(DistributedTokenBucketConfig config,
                                                LeaseFetcherPtr fetcher, TimeSource& time_source)
     : config_(config), fetcher_(std::move(fetcher)), time_source_(time_source) {}
@@ -36,11 +43,15 @@ uint64_t DistributedTokenBucket::consume(uint64_t tokens, bool allow_partial,
       ASSERT(fail_open_bucket_ != nullptr);
       consumed = fail_open_bucket_->consume(tokens, allow_partial, time_to_next_token);
 
-      // Periodically retry the remote source.
+      // Periodically retry the remote source. Without setting requested_lease
+      // here the retry would ask for 0 tokens — which the remote happily
+      // grants — and the bucket would exit fail-open with an empty local
+      // lease, stalling the next consume.
       const auto now = time_source_.monotonicTime();
       if (!refill_in_flight_ && now - last_failure_time_ >= config_.retry_interval) {
         refill_in_flight_ = true;
         kick_off_fetch = true;
+        requested_lease = config_.lease_size;
       }
     } else {
       // Normal mode: serve from the local lease.
@@ -72,6 +83,9 @@ uint64_t DistributedTokenBucket::consume(uint64_t tokens, bool allow_partial,
   }
 
   if (kick_off_fetch) {
+    if (config_.stats != nullptr) {
+      config_.stats->lease_requests_total_.inc();
+    }
     auto alive = alive_;
     fetcher_->fetchLease(requested_lease, [this, alive](uint64_t granted, bool success) {
       if (!alive->load(std::memory_order_acquire)) {
@@ -96,9 +110,20 @@ void DistributedTokenBucket::onLeaseGranted(uint64_t granted, bool success) {
   refill_in_flight_ = false;
 
   if (success) {
-    if (fail_open_active_) {
+    if (config_.stats != nullptr) {
+      config_.stats->lease_granted_bytes_total_.add(granted);
+    }
+    // Only exit fail-open when we actually got tokens. A "successful" 0-grant
+    // means the remote bucket is genuinely empty right now; if we exited
+    // fail-open here we'd drop the fallback bucket, set local_tokens_ = 0, and
+    // the next consume() would stall until the next refill returned non-zero.
+    // Stay in fail-open until we get real progress.
+    if (fail_open_active_ && granted > 0) {
       ENVOY_LOG(info, "distributed_token_bucket: remote recovered, leaving fail-open mode");
       fail_open_active_ = false;
+      if (config_.stats != nullptr) {
+        config_.stats->fail_open_active_.set(0);
+      }
       // Drop the fallback bucket; the lease is the source of truth again.
       fail_open_bucket_.reset();
     }
@@ -108,6 +133,9 @@ void DistributedTokenBucket::onLeaseGranted(uint64_t granted, bool success) {
 
   // Fetch failed.
   last_failure_time_ = time_source_.monotonicTime();
+  if (config_.stats != nullptr) {
+    config_.stats->lease_failures_total_.inc();
+  }
 
   if (!config_.fail_open) {
     ENVOY_LOG(warn, "distributed_token_bucket: remote unavailable, fail-closed");
@@ -118,6 +146,9 @@ void DistributedTokenBucket::onLeaseGranted(uint64_t granted, bool success) {
     ENVOY_LOG(warn, "distributed_token_bucket: remote unavailable, entering fail-open mode at "
                     "configured rate");
     fail_open_active_ = true;
+    if (config_.stats != nullptr) {
+      config_.stats->fail_open_active_.set(1);
+    }
     if (fail_open_bucket_ == nullptr) {
       fail_open_bucket_ = std::make_unique<TokenBucketImpl>(
           config_.fail_open_rate_tokens_per_sec, time_source_,
@@ -138,11 +169,13 @@ std::chrono::milliseconds DistributedTokenBucket::nextTokenAvailable() {
 }
 
 void DistributedTokenBucket::maybeReset(uint64_t num_tokens) {
-  // The remote source is the source of truth. Local-only reset is best-effort:
-  // cap the local lease at `num_tokens` so callers depending on `maybeReset` for
-  // pre-fill semantics don't see stale state.
+  // The TokenBucket interface contract is to *set* the local count to
+  // `num_tokens`. The remote bucket's state is unchanged; the next refill will
+  // reconcile with whatever the remote side believes. Pre-fill semantics
+  // (callers that maybeReset to seed an initial burst before traffic flows)
+  // now work correctly.
   absl::MutexLock lock(&mutex_);
-  local_tokens_ = std::min(local_tokens_, num_tokens);
+  local_tokens_ = num_tokens;
 }
 
 bool DistributedTokenBucket::refillInFlightForTest() const {

@@ -20,32 +20,7 @@ option (udpa.annotations.file_status).package_version_status = ACTIVE;
 // Bandwidth limit :ref:`configuration overview <config_http_filters_bandwidth_limit>`.
 // [#extension: envoy.filters.http.bandwidth_limit]
 
-// Distributed (cross-process) bandwidth limit configuration. When set, the
-// filter uses a leased token bucket backed by an external store (e.g. Redis)
-// shared across multiple Envoy instances. The local ``limit_kbps`` value is
-// still used as the per-instance fallback rate when ``fail_open`` is true and
-// the remote store is unreachable.
-message DistributedBandwidthLimit {
-  // Name of the upstream cluster that hosts the remote bucket store (Redis).
-  string cluster = 1 [(validate.rules).string = {min_len: 1}];
-
-  // Bucket key in the remote store. Two Envoy fleets sharing this key share
-  // the same global rate.
-  string key = 2 [(validate.rules).string = {min_len: 1}];
-
-  // Local lease size in KiB. Each refill from the remote store tops the local
-  // bucket back up toward this size. Larger leases reduce remote QPS but
-  // increase the worst-case over-allow when many instances refill in parallel.
-  // Defaults to 64.
-  google.protobuf.UInt64Value lease_kb = 3;
-
-  // If true (default), fall back to a local token bucket at the configured
-  // per-instance rate when the remote store is unreachable. If false, the
-  // filter buffers / backpressures until the store recovers.
-  bool fail_open = 4;
-}
-
-// [#next-free-field: 9]
+// [#next-free-field: 8]
 message BandwidthLimit {
   // Defines the mode for the bandwidth limit filter.
   // Values represent bitmask.
@@ -110,10 +85,4 @@ message BandwidthLimit {
   // Optional The prefix for the response trailers.
   string response_trailer_prefix = 7
       [(validate.rules).string = {well_known_regex: HTTP_HEADER_NAME strict: false}];
-
-  // When set, the limit is enforced via a remote leased token bucket
-  // (typically Redis-backed) shared across multiple Envoy instances.
-  // ``limit_kbps`` is interpreted as the global rate; the same rate is used as
-  // the fail-open fallback per instance.
-  DistributedBandwidthLimit distributed = 8;
 }

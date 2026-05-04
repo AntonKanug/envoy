@@ -7,6 +7,8 @@
 
 #include "envoy/common/time.h"
 #include "envoy/common/token_bucket.h"
+#include "envoy/stats/scope.h"
+#include "envoy/stats/stats_macros.h"
 
 #include "source/common/common/logger.h"
 #include "source/common/common/token_bucket_impl.h"
@@ -18,6 +20,22 @@ namespace Envoy {
 namespace Extensions {
 namespace Common {
 namespace DistributedTokenBucket {
+
+#define ALL_DISTRIBUTED_BUCKET_STATS(COUNTER, GAUGE)                                               \
+  COUNTER(lease_requests_total)                                                                    \
+  COUNTER(lease_failures_total)                                                                    \
+  COUNTER(lease_granted_bytes_total)                                                               \
+  GAUGE(fail_open_active, NeverImport)
+
+struct DistributedBucketStats {
+  ALL_DISTRIBUTED_BUCKET_STATS(GENERATE_COUNTER_STRUCT, GENERATE_GAUGE_STRUCT)
+};
+
+// Build a stats struct rooted at "<prefix>.distributed_bandwidth_limit.*" in
+// `scope`. Filters call this once per FilterConfig and pass the returned struct
+// to `DistributedTokenBucketConfig::stats`.
+DistributedBucketStats generateDistributedBucketStats(const std::string& prefix,
+                                                     Stats::Scope& scope);
 
 struct DistributedTokenBucketConfig {
   // Target lease size (bucket capacity in tokens). Each successful fetch tops
@@ -38,10 +56,17 @@ struct DistributedTokenBucketConfig {
 
   // After a fetch failure, retry on the next consume() at most this often.
   std::chrono::milliseconds retry_interval{std::chrono::seconds(1)};
+
+  // Optional stats sink. When non-null, the bucket emits counters/gauges for
+  // remote-fetch volume, failures, and fail-open state. Owned by the caller
+  // (typically the filter's FilterConfig); must outlive the bucket.
+  DistributedBucketStats* stats{nullptr};
 };
 
-// A TokenBucket implementation backed by a remote (typically Redis) global
-// counter, accessed via `LeaseFetcher`.
+// A TokenBucket implementation backed by a remote global counter, accessed
+// via `LeaseFetcher`. The remote storage backend is opaque to this class —
+// today's production fetcher is a gRPC client to a quota service that holds
+// state in Redis.
 //
 // Design: a small local lease holds tokens drawn from the global pool. consume()
 // is synchronous against the local lease. When the local lease drops below
