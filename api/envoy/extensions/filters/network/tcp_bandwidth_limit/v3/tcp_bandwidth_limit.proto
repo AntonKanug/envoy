@@ -3,6 +3,7 @@ syntax = "proto3";
 package envoy.extensions.filters.network.tcp_bandwidth_limit.v3;
 
 import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/grpc_service.proto";
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/wrappers.proto";
@@ -20,7 +21,61 @@ option (udpa.annotations.file_status).package_version_status = ACTIVE;
 // TCP Bandwidth Limit :ref:`configuration overview <config_network_filters_tcp_bandwidth_limit>`.
 // [#extension: envoy.filters.network.tcp_bandwidth_limit]
 
+// Distributed (cross-process) bandwidth limit configuration. When set, the
+// filter uses a leased token bucket fetched from an external bandwidth-quota
+// gRPC service shared across multiple Envoy instances; the service owns the
+// authoritative bucket state and is the single source of truth for grants.
+// The ``read_limit_kbps`` / ``write_limit_kbps`` values are interpreted as
+// the global fleet-wide rate. ``fail_open_kbps`` controls per-instance
+// fallback behavior when the quota service is unreachable.
+//
+// Two filter chains pointing at the same ``key`` against the same
+// ``quota_service`` share one global rate. The filter automatically appends
+// ``:read`` and ``:write`` suffixes to ``key`` so the read and write
+// directions track independent global pools without colliding.
+//
 // [#next-free-field: 6]
+message DistributedBandwidthLimit {
+  // gRPC service exposing the bandwidth quota API
+  // (``envoy.extensions.distributed_token_bucket.v3.BandwidthQuotaService``).
+  // The standalone ``bandwidth-quota`` Go binary implements this; any service
+  // that speaks the proto schema is acceptable.
+  config.core.v3.GrpcService quota_service = 1 [(validate.rules).message = {required: true}];
+
+  // Bucket key. Combined with the per-direction suffix described above to form
+  // the actual key in the remote store.
+  string key = 2 [(validate.rules).string = {min_len: 1}];
+
+  // Local lease size in KiB. Each refill from the quota service tops the
+  // local bucket back up toward this size. Larger leases reduce QPS but
+  // increase the worst-case over-allow when many instances refill in
+  // parallel. If unset, an automatic value is derived from the configured
+  // rate (~ ``rate * fill_interval``), clamped to [64 KiB, 16 MiB].
+  //
+  // Note: the *server-side* bucket capacity equals the configured rate, so a
+  // lease larger than ~1 second of rate is silently capped to that rate by
+  // the quota service. Setting ``lease_kb`` >> 1s of rate is wasteful.
+  google.protobuf.UInt64Value lease_kb = 3;
+
+  // If true, fall back to a local token bucket at ``fail_open_kbps`` (or, if
+  // that is unset, a small fraction of the configured global rate) when the
+  // quota service is unreachable. Defaults to ``false``: the safer choice for
+  // distributed semantics, since the alternative (true) lets every Envoy
+  // independently allow up to the global rate during a service outage.
+  bool fail_open = 4;
+
+  // Per-instance bandwidth in KiB/s used while the quota service is
+  // unreachable and ``fail_open`` is true. Has no effect if ``fail_open`` is
+  // false. If unset, the fallback rate defaults to the configured
+  // ``read_limit_kbps`` / ``write_limit_kbps`` per instance — which means an
+  // outage allows the configured global rate *per Envoy*. With N Envoys this
+  // is N× the intended global rate during the outage. **Set this explicitly
+  // to a fraction of the global rate (e.g. global / expected_fleet_size) if
+  // you turn ``fail_open`` on.**
+  google.protobuf.UInt32Value fail_open_kbps = 5;
+}
+
+// [#next-free-field: 7]
 message TcpBandwidthLimit {
   // The human readable prefix to use when emitting stats.
   string stat_prefix = 1 [(validate.rules).string = {min_len: 1}];
@@ -45,4 +100,10 @@ message TcpBandwidthLimit {
   // Runtime flag that controls whether the filter is enabled or not. If not specified, defaults
   // to enabled.
   config.core.v3.RuntimeFeatureFlag runtime_enabled = 5;
+
+  // When set, the read / write limits are enforced via a remote leased token
+  // bucket (typically Redis-backed) shared across multiple Envoy instances.
+  // ``read_limit_kbps`` / ``write_limit_kbps`` are interpreted as the global
+  // rate; the same rate is used as the fail-open fallback per instance.
+  DistributedBandwidthLimit distributed = 6;
 }

@@ -17,6 +17,8 @@ envoy_cc_library(
     srcs = ["bandwidth_limit.cc"],
     hdrs = ["bandwidth_limit.h"],
     deps = [
+        "//envoy/common:exception_lib",
+        "//envoy/common:token_bucket_interface",
         "//envoy/http:codes_interface",
         "//envoy/server:filter_config_interface",
         "//envoy/stats:stats_macros",

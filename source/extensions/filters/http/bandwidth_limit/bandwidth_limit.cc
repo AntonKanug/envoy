@@ -3,8 +3,10 @@
 #include <string>
 #include <vector>
 
+#include "envoy/common/exception.h"
 #include "envoy/http/codes.h"
 
+#include "source/common/common/shared_token_bucket_impl.h"
 #include "source/common/http/utility.h"
 #include "source/common/stats/timespan_impl.h"
 

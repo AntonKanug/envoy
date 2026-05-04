@@ -4,17 +4,19 @@
 #include <memory>
 
 #include "envoy/common/time.h"
+#include "envoy/common/token_bucket.h"
 #include "envoy/event/timer.h"
 #include "envoy/extensions/filters/network/tcp_bandwidth_limit/v3/tcp_bandwidth_limit.pb.h"
 #include "envoy/network/filter.h"
 #include "envoy/runtime/runtime.h"
+#include "envoy/server/factory_context.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
 
 #include "source/common/buffer/watermark_buffer.h"
 #include "source/common/common/logger.h"
-#include "source/common/common/shared_token_bucket_impl.h"
 #include "source/common/runtime/runtime_protos.h"
+#include "source/extensions/common/distributed_token_bucket/distributed_token_bucket.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -50,7 +52,7 @@ class FilterConfig {
 public:
   FilterConfig(
       const envoy::extensions::filters::network::tcp_bandwidth_limit::v3::TcpBandwidthLimit& config,
-      Stats::Scope& scope, Runtime::Loader& runtime, TimeSource& time_source);
+      Stats::Scope& scope, Server::Configuration::ServerFactoryContext& server_ctx);
 
   Runtime::Loader& runtime() { return runtime_; }
   TcpBandwidthLimitStats& stats() { return stats_; }
@@ -61,12 +63,8 @@ public:
   uint64_t readLimit() const { return read_limit_kbps_; }
   uint64_t writeLimit() const { return write_limit_kbps_; }
   bool enabled() const { return enabled_.enabled(); }
-  const std::shared_ptr<SharedTokenBucketImpl>& readTokenBucket() const {
-    return read_token_bucket_;
-  }
-  const std::shared_ptr<SharedTokenBucketImpl>& writeTokenBucket() const {
-    return write_token_bucket_;
-  }
+  const std::shared_ptr<TokenBucket>& readTokenBucket() const { return read_token_bucket_; }
+  const std::shared_ptr<TokenBucket>& writeTokenBucket() const { return write_token_bucket_; }
   std::chrono::milliseconds fillInterval() const { return fill_interval_; }
 
 private:
@@ -79,8 +77,12 @@ private:
   const std::chrono::milliseconds fill_interval_;
   const Runtime::FeatureFlag enabled_;
   TcpBandwidthLimitStats stats_;
-  std::shared_ptr<SharedTokenBucketImpl> read_token_bucket_;
-  std::shared_ptr<SharedTokenBucketImpl> write_token_bucket_;
+  // Distributed-mode stats. Allocated lazily only when proto.has_distributed()
+  // so the stat namespace stays clean for purely-local configs.
+  std::unique_ptr<Extensions::Common::DistributedTokenBucket::DistributedBucketStats>
+      distributed_stats_;
+  std::shared_ptr<TokenBucket> read_token_bucket_;
+  std::shared_ptr<TokenBucket> write_token_bucket_;
 };
 
 using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
