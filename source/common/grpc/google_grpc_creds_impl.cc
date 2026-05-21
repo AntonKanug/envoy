@@ -24,8 +24,8 @@ std::string CredsUtility::filterExpiredRoots(const std::string& pem_bundle) {
     if (cert == nullptr) {
       break;
     }
-    // X509_cmp_current_time returns >0 if the supplied time is in the future,
-    // i.e. the cert is still within its validity window.
+    // Keep the cert only if its end-of-validity is strictly in the future
+    // (i.e. it is still within its validity window).
     if (X509_cmp_current_time(X509_get0_notAfter(cert.get())) > 0) {
       PEM_write_bio_X509(out.get(), cert.get());
     }

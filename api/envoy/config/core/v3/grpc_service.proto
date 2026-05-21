@@ -101,7 +101,7 @@ message GrpcService {
       // remaining roots, the intermediate chain, and the leaf is unchanged.
       //
       // Use this when the trust bundle contains an expired duplicate of a
-      // renewed root (same Subject DN, often same key) and the gRPC TLS
+      // renewed root (same Subject name, often same key) and the gRPC TLS
       // chain builder happens to pick the dead one. Removing it locally
       // lets verification flow through the live anchor without weakening
       // any other validation. If every candidate anchor for the chain is
