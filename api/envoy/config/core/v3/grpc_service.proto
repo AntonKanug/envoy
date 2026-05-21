@@ -80,6 +80,7 @@ message GrpcService {
         "envoy.api.v2.core.GrpcService.GoogleGrpc";
 
     // See https://grpc.io/grpc/cpp/structgrpc_1_1_ssl_credentials_options.html.
+    // [#next-free-field: 5]
     message SslCredentials {
       option (udpa.annotations.versioning).previous_message_type =
           "envoy.api.v2.core.GrpcService.GoogleGrpc.SslCredentials";
@@ -92,6 +93,19 @@ message GrpcService {
 
       // PEM encoded client certificate chain.
       DataSource cert_chain = 3;
+
+      // If set to true, server certificate chains whose only validation
+      // failure is an expired ``notBefore``/``notAfter`` will be accepted.
+      // All other checks (signature, issuer chain, name match, key usage)
+      // still apply. Mirrors :ref:`allow_expired_certificate
+      // <envoy_v3_api_field_extensions.transport_sockets.tls.v3.CertificateValidationContext.allow_expired_certificate>`
+      // on the native Envoy TLS transport socket.
+      //
+      // This is intended for narrow recovery scenarios such as an expired
+      // CA still being present in a trust bundle alongside a renewed copy
+      // of the same anchor. Leaving this enabled in production weakens the
+      // freshness guarantee of the chain.
+      bool allow_expired_certificate = 4;
     }
 
     // Local channel credentials. Only UDS is supported for now.

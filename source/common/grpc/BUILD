@@ -203,7 +203,10 @@ envoy_cc_library(
     name = "google_grpc_creds_lib",
     srcs = ["google_grpc_creds_impl.cc"],
     hdrs = ["google_grpc_creds_impl.h"],
-    external_deps = ["grpc"],
+    external_deps = [
+        "grpc",
+        "ssl",
+    ],
     deps = [
         "//envoy/api:api_interface",
         "//envoy/grpc:google_grpc_creds_interface",

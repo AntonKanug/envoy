@@ -1,5 +1,10 @@
 #include "source/common/grpc/google_grpc_creds_impl.h"
 
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "envoy/config/core/v3/grpc_service.pb.h"
 #include "envoy/grpc/google_grpc_creds.h"
 
@@ -7,9 +12,86 @@
 #include "source/common/runtime/runtime_features.h"
 
 #include "grpcpp/security/tls_certificate_provider.h"
+#include "grpcpp/security/tls_certificate_verifier.h"
+#include "openssl/bio.h"
+#include "openssl/pem.h"
+#include "openssl/x509.h"
 
 namespace Envoy {
 namespace Grpc {
+namespace {
+
+// Verifier that runs BoringSSL chain validation with X509_V_FLAG_NO_CHECK_TIME
+// set, so a chain that would otherwise be rejected only because of an expired
+// notBefore/notAfter is accepted. Mirrors the semantics of envoy_grpc's
+// allow_expired_certificate option (default_validator.cc:120-122).
+class AllowExpiredCertVerifier : public grpc::experimental::ExternalCertificateVerifier {
+public:
+  explicit AllowExpiredCertVerifier(std::string root_certs)
+      : root_certs_(std::move(root_certs)) {}
+
+  bool Verify(grpc::experimental::TlsCustomVerificationCheckRequest* request,
+              std::function<void(grpc::Status)> /*callback*/,
+              grpc::Status* sync_status) override {
+    bssl::UniquePtr<X509_STORE> store(X509_STORE_new());
+    if (store == nullptr) {
+      *sync_status = grpc::Status(grpc::StatusCode::INTERNAL, "X509_STORE_new failed");
+      return true;
+    }
+    bssl::UniquePtr<BIO> root_bio(
+        BIO_new_mem_buf(root_certs_.data(), static_cast<int>(root_certs_.size())));
+    while (true) {
+      bssl::UniquePtr<X509> ca(PEM_read_bio_X509(root_bio.get(), nullptr, nullptr, nullptr));
+      if (ca == nullptr) {
+        break;
+      }
+      X509_STORE_add_cert(store.get(), ca.get());
+    }
+    X509_STORE_set_flags(store.get(), X509_V_FLAG_NO_CHECK_TIME);
+
+    const grpc::string_ref chain = request->peer_cert_full_chain();
+    bssl::UniquePtr<BIO> chain_bio(
+        BIO_new_mem_buf(chain.data(), static_cast<int>(chain.size())));
+    bssl::UniquePtr<X509> leaf;
+    bssl::UniquePtr<STACK_OF(X509)> untrusted(sk_X509_new_null());
+    while (true) {
+      X509* x = PEM_read_bio_X509(chain_bio.get(), nullptr, nullptr, nullptr);
+      if (x == nullptr) {
+        break;
+      }
+      if (leaf == nullptr) {
+        leaf.reset(x);
+      } else {
+        sk_X509_push(untrusted.get(), x);
+      }
+    }
+    if (leaf == nullptr) {
+      *sync_status = grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "no peer certificate");
+      return true;
+    }
+
+    bssl::UniquePtr<X509_STORE_CTX> ctx(X509_STORE_CTX_new());
+    if (!X509_STORE_CTX_init(ctx.get(), store.get(), leaf.get(), untrusted.get())) {
+      *sync_status = grpc::Status(grpc::StatusCode::INTERNAL, "X509_STORE_CTX_init failed");
+      return true;
+    }
+    if (X509_verify_cert(ctx.get()) != 1) {
+      const int err = X509_STORE_CTX_get_error(ctx.get());
+      *sync_status =
+          grpc::Status(grpc::StatusCode::UNAUTHENTICATED, X509_verify_cert_error_string(err));
+    } else {
+      *sync_status = grpc::Status::OK;
+    }
+    return true;
+  }
+
+  void Cancel(grpc::experimental::TlsCustomVerificationCheckRequest* /*request*/) override {}
+
+private:
+  const std::string root_certs_;
+};
+
+} // namespace
 
 std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
     const envoy::config::core::v3::GrpcService::GoogleGrpc& google_grpc, Api::Api& api) {
@@ -42,6 +124,15 @@ std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
       }
       if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.google_grpc_disable_tls_13")) {
         options.set_max_tls_version(grpc_tls_version::TLS1_2);
+      }
+      if (ssl_credentials.allow_expired_certificate() && !root_certs.empty()) {
+        // Skip gRPC core's built-in verification (which always enforces validity
+        // dates) and replace it with our own verifier that runs BoringSSL chain
+        // validation with X509_V_FLAG_NO_CHECK_TIME.
+        options.set_verify_server_certs(false);
+        options.set_certificate_verifier(
+            grpc::experimental::ExternalCertificateVerifier::Create<AllowExpiredCertVerifier>(
+                root_certs));
       }
       return grpc::experimental::TlsCredentials(options);
     }
