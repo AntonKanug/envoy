@@ -15,16 +15,9 @@
 
 namespace Envoy {
 namespace Grpc {
-namespace {
 
-// Drops any CA in `pem` whose notAfter is in the past, returning the remaining
-// certificates as a PEM string. Used to remove expired duplicates of renewed
-// roots from a trust bundle before handing it to gRPC, so chain building does
-// not pick the dead anchor by accident (e.g. after BoringSSL's std::sort change
-// in 0.20260327.0). Validity checks on the surviving roots, intermediates, and
-// leaf are unchanged.
-std::string filterExpiredRoots(const std::string& pem) {
-  bssl::UniquePtr<BIO> in(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+std::string CredsUtility::filterExpiredRoots(const std::string& pem_bundle) {
+  bssl::UniquePtr<BIO> in(BIO_new_mem_buf(pem_bundle.data(), static_cast<int>(pem_bundle.size())));
   bssl::UniquePtr<BIO> out(BIO_new(BIO_s_mem()));
   while (true) {
     bssl::UniquePtr<X509> cert(PEM_read_bio_X509(in.get(), nullptr, nullptr, nullptr));
@@ -45,8 +38,6 @@ std::string filterExpiredRoots(const std::string& pem) {
   return std::string(mem->data, mem->length);
 }
 
-} // namespace
-
 std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
     const envoy::config::core::v3::GrpcService::GoogleGrpc& google_grpc, Api::Api& api) {
   if (google_grpc.has_channel_credentials()) {
@@ -57,7 +48,7 @@ std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
       auto root_certs = THROW_OR_RETURN_VALUE(
           Config::DataSource::read(ssl_credentials.root_certs(), true, api), std::string);
       if (ssl_credentials.filter_expired_root_certs() && !root_certs.empty()) {
-        root_certs = filterExpiredRoots(root_certs);
+        root_certs = CredsUtility::filterExpiredRoots(root_certs);
       }
       const auto private_key = THROW_OR_RETURN_VALUE(
           Config::DataSource::read(ssl_credentials.private_key(), true, api), std::string);

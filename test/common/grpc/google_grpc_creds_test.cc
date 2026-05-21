@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 
 #include "envoy/config/core/v3/grpc_service.pb.h"
@@ -8,6 +9,8 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/utility.h"
 
+#include "absl/strings/str_split.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
 namespace Envoy {
@@ -54,6 +57,65 @@ TEST_F(CredsUtilityTest, DefaultSslChannelCredentials) {
   EXPECT_NE(nullptr, CredsUtility::defaultSslChannelCredentials(config, *api_));
 }
 
+TEST_F(CredsUtilityTest, FilterExpiredRootsEmpty) {
+  EXPECT_EQ("", CredsUtility::filterExpiredRoots(""));
+}
+
+TEST_F(CredsUtilityTest, FilterExpiredRootsGarbage) {
+  // Non-PEM input parses no certs; output is empty.
+  EXPECT_EQ("", CredsUtility::filterExpiredRoots("not a cert"));
+}
+
+// Returns the number of certs in a PEM bundle by counting BEGIN markers.
+size_t countCerts(absl::string_view pem) {
+  size_t count = 0;
+  for (size_t pos = 0;
+       (pos = pem.find("-----BEGIN CERTIFICATE-----", pos)) != absl::string_view::npos; ++pos) {
+    ++count;
+  }
+  return count;
+}
+
+TEST_F(CredsUtilityTest, FilterExpiredRootsKeepsValid) {
+  const std::string ca = TestEnvironment::readFileToStringForTest(
+      TestEnvironment::runfilesPath("test/common/tls/test_data/ca_cert.pem"));
+  const std::string out = CredsUtility::filterExpiredRoots(ca);
+  // The valid CA survives the filter: exactly one cert in the output.
+  EXPECT_EQ(1u, countCerts(out));
+}
+
+TEST_F(CredsUtilityTest, FilterExpiredRootsDropsExpired) {
+  const std::string expired = TestEnvironment::readFileToStringForTest(
+      TestEnvironment::runfilesPath("test/common/tls/test_data/expired_cert.pem"));
+  EXPECT_EQ("", CredsUtility::filterExpiredRoots(expired));
+}
+
+TEST_F(CredsUtilityTest, FilterExpiredRootsMixed) {
+  const std::string ca = TestEnvironment::readFileToStringForTest(
+      TestEnvironment::runfilesPath("test/common/tls/test_data/ca_cert.pem"));
+  const std::string expired = TestEnvironment::readFileToStringForTest(
+      TestEnvironment::runfilesPath("test/common/tls/test_data/expired_cert.pem"));
+  // Mixed bundle: expired comes first (the order that surfaces the bug), valid second.
+  const std::string out = CredsUtility::filterExpiredRoots(expired + ca);
+  // Only one cert should survive — the valid CA.
+  EXPECT_EQ(1u, countCerts(out));
+  EXPECT_THAT(out, testing::HasSubstr("-----BEGIN CERTIFICATE-----"));
+  EXPECT_THAT(out, testing::HasSubstr("-----END CERTIFICATE-----"));
+}
+
+TEST_F(CredsUtilityTest, GetChannelCredentialsFilterExpiredRootCerts) {
+  // Verify the proto field is honored end-to-end through getChannelCredentials.
+  envoy::config::core::v3::GrpcService::GoogleGrpc config;
+  auto* ssl = config.mutable_channel_credentials()->mutable_ssl_credentials();
+  ssl->mutable_root_certs()->set_inline_string(TestEnvironment::readFileToStringForTest(
+      TestEnvironment::runfilesPath("test/common/tls/test_data/expired_cert.pem")));
+  ssl->set_filter_expired_root_certs(true);
+  // After filtering the bundle is empty; gRPC TLS credentials are still constructed
+  // (gRPC will fall back to system defaults). We just want to confirm no crash and a
+  // non-null result.
+  EXPECT_NE(nullptr, CredsUtility::getChannelCredentials(config, *api_));
+}
+
 TEST_F(CredsUtilityTest, CallCredentials) {
   EXPECT_TRUE(CredsUtility::callCredentials({}).empty());
   {
@@ -80,7 +142,9 @@ TEST_F(CredsUtilityTest, CallCredentials) {
 }
 
 TEST_F(CredsUtilityTest, DefaultChannelCredentials) {
-  { EXPECT_NE(nullptr, CredsUtility::defaultChannelCredentials({}, *api_)); }
+  {
+    EXPECT_NE(nullptr, CredsUtility::defaultChannelCredentials({}, *api_));
+  }
   {
     envoy::config::core::v3::GrpcService config;
     TestUtility::setTestSslGoogleGrpcConfig(config, true);
