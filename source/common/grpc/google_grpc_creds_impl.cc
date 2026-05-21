@@ -27,12 +27,10 @@ namespace {
 // allow_expired_certificate option (default_validator.cc:120-122).
 class AllowExpiredCertVerifier : public grpc::experimental::ExternalCertificateVerifier {
 public:
-  explicit AllowExpiredCertVerifier(std::string root_certs)
-      : root_certs_(std::move(root_certs)) {}
+  explicit AllowExpiredCertVerifier(std::string root_certs) : root_certs_(std::move(root_certs)) {}
 
   bool Verify(grpc::experimental::TlsCustomVerificationCheckRequest* request,
-              std::function<void(grpc::Status)> /*callback*/,
-              grpc::Status* sync_status) override {
+              std::function<void(grpc::Status)> /*callback*/, grpc::Status* sync_status) override {
     bssl::UniquePtr<X509_STORE> store(X509_STORE_new());
     if (store == nullptr) {
       *sync_status = grpc::Status(grpc::StatusCode::INTERNAL, "X509_STORE_new failed");
@@ -50,8 +48,7 @@ public:
     X509_STORE_set_flags(store.get(), X509_V_FLAG_NO_CHECK_TIME);
 
     const grpc::string_ref chain = request->peer_cert_full_chain();
-    bssl::UniquePtr<BIO> chain_bio(
-        BIO_new_mem_buf(chain.data(), static_cast<int>(chain.size())));
+    bssl::UniquePtr<BIO> chain_bio(BIO_new_mem_buf(chain.data(), static_cast<int>(chain.size())));
     bssl::UniquePtr<X509> leaf;
     bssl::UniquePtr<STACK_OF(X509)> untrusted(sk_X509_new_null());
     while (true) {
