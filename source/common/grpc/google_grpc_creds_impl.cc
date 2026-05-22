@@ -5,11 +5,13 @@
 #include "envoy/config/core/v3/grpc_service.pb.h"
 #include "envoy/grpc/google_grpc_creds.h"
 
+#include "source/common/common/logger.h"
 #include "source/common/config/datasource.h"
 #include "source/common/runtime/runtime_features.h"
 
 #include "grpcpp/security/tls_certificate_provider.h"
 #include "openssl/bio.h"
+#include "openssl/err.h"
 #include "openssl/pem.h"
 #include "openssl/x509.h"
 
@@ -22,7 +24,19 @@ std::string CredsUtility::filterExpiredRoots(const std::string& pem_bundle) {
   while (true) {
     bssl::UniquePtr<X509> cert(PEM_read_bio_X509(in.get(), nullptr, nullptr, nullptr));
     if (cert == nullptr) {
-      break;
+      const unsigned long err = ERR_peek_last_error();
+      const bool eof = err == 0 || ERR_equals(err, ERR_LIB_PEM, PEM_R_NO_START_LINE);
+      if (!eof) {
+        char buf[256];
+        ERR_error_string_n(err, buf, sizeof(buf));
+        ENVOY_LOG_MISC(
+            warn, "google_grpc: skipping unparseable certificate in root_certs bundle: {}", buf);
+      }
+      ERR_clear_error();
+      if (eof) {
+        break;
+      }
+      continue;
     }
     // Keep the cert only if its end-of-validity is strictly in the future
     // (i.e. it is still within its validity window).
@@ -48,7 +62,12 @@ std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
       auto root_certs = THROW_OR_RETURN_VALUE(
           Config::DataSource::read(ssl_credentials.root_certs(), true, api), std::string);
       if (!root_certs.empty()) {
-        root_certs = CredsUtility::filterExpiredRoots(root_certs);
+        std::string filtered = CredsUtility::filterExpiredRoots(root_certs);
+        if (!filtered.empty()) {
+          root_certs = std::move(filtered);
+        } else {
+          ENVOY_LOG_MISC(warn, "google_grpc: all root certs filtered, keeping the original bundle");
+        }
       }
       const auto private_key = THROW_OR_RETURN_VALUE(
           Config::DataSource::read(ssl_credentials.private_key(), true, api), std::string);
