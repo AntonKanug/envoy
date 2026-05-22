@@ -80,12 +80,17 @@ message GrpcService {
         "envoy.api.v2.core.GrpcService.GoogleGrpc";
 
     // See https://grpc.io/grpc/cpp/structgrpc_1_1_ssl_credentials_options.html.
-    // [#next-free-field: 5]
     message SslCredentials {
       option (udpa.annotations.versioning).previous_message_type =
           "envoy.api.v2.core.GrpcService.GoogleGrpc.SslCredentials";
 
-      // PEM encoded server root certificates.
+      // PEM encoded server root certificates. Any trust-anchor certificate in
+      // this bundle whose ``notAfter`` is in the past is silently dropped
+      // before the bundle is handed to the gRPC TLS stack. This avoids a
+      // case where the gRPC chain builder picks an expired duplicate of a
+      // renewed root (same Subject name, often same key) and fails the
+      // handshake. Validity-period enforcement on the remaining roots, the
+      // intermediate chain, and the leaf is unchanged.
       DataSource root_certs = 1;
 
       // PEM encoded client private key.
@@ -93,21 +98,6 @@ message GrpcService {
 
       // PEM encoded client certificate chain.
       DataSource cert_chain = 3;
-
-      // If true, any trust-anchor certificate in :ref:`root_certs
-      // <envoy_v3_api_field_config.core.v3.GrpcService.GoogleGrpc.SslCredentials.root_certs>`
-      // whose ``notAfter`` is in the past is dropped before the bundle is
-      // handed to the gRPC TLS stack. Validity-period enforcement on the
-      // remaining roots, the intermediate chain, and the leaf is unchanged.
-      //
-      // Use this when the trust bundle contains an expired duplicate of a
-      // renewed root (same Subject name, often same key) and the gRPC TLS
-      // chain builder happens to pick the dead one. Removing it locally
-      // lets verification flow through the live anchor without weakening
-      // any other validation. If every candidate anchor for the chain is
-      // expired, verification fails with ``no trust anchor`` rather than
-      // silently accepting an expired path.
-      bool filter_expired_root_certs = 4;
     }
 
     // Local channel credentials. Only UDS is supported for now.

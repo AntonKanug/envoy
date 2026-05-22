@@ -47,7 +47,7 @@ std::shared_ptr<grpc::ChannelCredentials> CredsUtility::getChannelCredentials(
       const auto& ssl_credentials = google_grpc.channel_credentials().ssl_credentials();
       auto root_certs = THROW_OR_RETURN_VALUE(
           Config::DataSource::read(ssl_credentials.root_certs(), true, api), std::string);
-      if (ssl_credentials.filter_expired_root_certs() && !root_certs.empty()) {
+      if (!root_certs.empty()) {
         root_certs = CredsUtility::filterExpiredRoots(root_certs);
       }
       const auto private_key = THROW_OR_RETURN_VALUE(

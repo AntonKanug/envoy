@@ -103,16 +103,15 @@ TEST_F(CredsUtilityTest, FilterExpiredRootsMixed) {
   EXPECT_THAT(out, testing::HasSubstr("-----END CERTIFICATE-----"));
 }
 
-TEST_F(CredsUtilityTest, GetChannelCredentialsFilterExpiredRootCerts) {
-  // Verify the proto field is honored end-to-end through getChannelCredentials.
+TEST_F(CredsUtilityTest, GetChannelCredentialsFiltersExpiredRoots) {
+  // getChannelCredentials always drops expired CAs from the configured root_certs
+  // bundle. Even when only an expired cert is supplied the call succeeds (with the
+  // filtered, now-empty bundle gRPC falls back to system defaults), and the
+  // returned credentials are non-null.
   envoy::config::core::v3::GrpcService::GoogleGrpc config;
   auto* ssl = config.mutable_channel_credentials()->mutable_ssl_credentials();
   ssl->mutable_root_certs()->set_inline_string(TestEnvironment::readFileToStringForTest(
       TestEnvironment::runfilesPath("test/common/tls/test_data/expired_cert.pem")));
-  ssl->set_filter_expired_root_certs(true);
-  // After filtering the bundle is empty; gRPC TLS credentials are still constructed
-  // (gRPC will fall back to system defaults). We just want to confirm no crash and a
-  // non-null result.
   EXPECT_NE(nullptr, CredsUtility::getChannelCredentials(config, *api_));
 }
 
