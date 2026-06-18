@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package envoy.extensions.distributed_token_bucket.v3;
+
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option java_package = "io.envoyproxy.envoy.extensions.distributed_token_bucket.v3";
+option java_outer_classname = "QuotaProto";
+option java_multiple_files = true;
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/distributed_token_bucket/v3;distributed_token_bucketv3";
+option (udpa.annotations.file_status).package_version_status = ACTIVE;
+
+// [#protodoc-title: Bandwidth Quota Service]
+
+// gRPC API consumed by Envoy's distributed token-bucket bandwidth limiter.
+// The on-the-wire equivalent of this service in the Envoy fork is the
+// out-of-tree ``bandwidth-quota`` Go binary; the source of truth for the
+// schema lives there. This file mirrors that schema so the C++ filter can
+// link a generated client.
+service BandwidthQuotaService {
+  // AcquireLease issues a partial-grant lease against a named bucket key.
+  // Callers ask for up to ``requested_tokens``; the response returns however
+  // many were actually available (in [0, requested_tokens]).
+  rpc AcquireLease(AcquireLeaseRequest) returns (AcquireLeaseResponse) {}
+}
+
+message AcquireLeaseRequest {
+  // Bucket key. Convention: scope/tenant identifier with a direction suffix
+  // (e.g. "tenant.acme.bandwidth:read"). Required.
+  string key = 1 [(validate.rules).string = {min_len: 1}];
+
+  // Maximum tokens the caller wants. Required.
+  uint64 requested_tokens = 2;
+
+  // Bucket rate / capacity in tokens per second. Required.
+  uint64 rate_tokens_per_sec = 3 [(validate.rules).uint64 = {gt: 0}];
+}
+
+message AcquireLeaseResponse {
+  // Tokens granted to the caller. May be less than ``requested_tokens``.
+  uint64 granted_tokens = 1;
+
+  // Hint for how long to wait before the next request when ``granted_tokens``
+  // is 0. Optional.
+  uint64 retry_after_ms = 2;
+}

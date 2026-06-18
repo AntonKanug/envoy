@@ -16,8 +16,7 @@ Network::FilterFactoryCb TcpBandwidthLimitConfigFactory::createFilterFactoryFrom
     Server::Configuration::FactoryContext& context) {
 
   auto config = std::make_shared<FilterConfig>(proto_config, context.scope(),
-                                               context.serverFactoryContext().runtime(),
-                                               context.serverFactoryContext().timeSource());
+                                               context.serverFactoryContext());
 
   return [config](Network::FilterManager& filter_manager) -> void {
     filter_manager.addFilter(std::make_shared<TcpBandwidthLimitFilter>(config));

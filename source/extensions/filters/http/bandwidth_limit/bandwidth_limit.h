@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "envoy/common/token_bucket.h"
 #include "envoy/extensions/filters/http/bandwidth_limit/v3/bandwidth_limit.pb.h"
 #include "envoy/http/filter.h"
 #include "envoy/runtime/runtime.h"
@@ -13,7 +14,6 @@
 #include "envoy/stats/timespan.h"
 
 #include "source/common/common/assert.h"
-#include "source/common/common/shared_token_bucket_impl.h"
 #include "source/common/http/header_map_impl.h"
 #include "source/common/router/header_parser.h"
 #include "source/common/runtime/runtime_protos.h"
@@ -75,7 +75,7 @@ public:
   uint64_t limit() const { return limit_kbps_; }
   bool enabled() const { return enabled_.enabled(); }
   EnableMode enableMode() const { return enable_mode_; };
-  const std::shared_ptr<SharedTokenBucketImpl> tokenBucket() const { return token_bucket_; }
+  const std::shared_ptr<TokenBucket> tokenBucket() const { return token_bucket_; }
   std::chrono::milliseconds fillInterval() const { return fill_interval_; }
   const Http::LowerCaseString& requestDelayTrailer() const { return request_delay_trailer_; }
   const Http::LowerCaseString& responseDelayTrailer() const { return response_delay_trailer_; }
@@ -104,7 +104,7 @@ private:
   const Runtime::FeatureFlag enabled_;
   mutable BandwidthLimitStats stats_;
   // Filter chain's shared token bucket
-  std::shared_ptr<SharedTokenBucketImpl> token_bucket_;
+  std::shared_ptr<TokenBucket> token_bucket_;
   const Http::LowerCaseString request_delay_trailer_;
   const Http::LowerCaseString response_delay_trailer_;
   const Http::LowerCaseString request_filter_delay_trailer_;
