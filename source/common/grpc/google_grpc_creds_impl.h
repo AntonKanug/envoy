@@ -65,6 +65,17 @@ public:
   static std::shared_ptr<grpc::ChannelCredentials>
   defaultChannelCredentials(const envoy::config::core::v3::GrpcService& grpc_service_config,
                             Api::Api& api);
+
+  /**
+   * Removes every CA in `pem_bundle` whose ``notAfter`` is in the past, returning the
+   * remaining certificates as a PEM string. Certificates that fail to parse are also
+   * skipped. Used by `getChannelCredentials` to drop expired duplicates of renewed
+   * roots from a trust bundle before handing it to gRPC, so that chain building does
+   * not pick the dead anchor by accident.
+   * @param pem_bundle PEM-encoded concatenation of zero or more X.509 certificates.
+   * @return PEM-encoded subset containing only certs whose ``notAfter`` is in the future.
+   */
+  static std::string filterExpiredRoots(const std::string& pem_bundle);
 };
 DECLARE_FACTORY(DefaultGoogleGrpcCredentialsFactory);
 

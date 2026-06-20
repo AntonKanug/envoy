@@ -132,11 +132,15 @@ envoy_cc_test(
 envoy_cc_test(
     name = "google_grpc_creds_test",
     srcs = envoy_select_google_grpc(["google_grpc_creds_test.cc"]),
-    data = [":service_key.json"],
+    data = [
+        ":service_key.json",
+        "//test/common/tls/test_data:certs",
+    ],
     rbe_pool = "6gig",
     deps = [
         ":utility_lib",
         "//test/test_common:utility_lib",
+        "@abseil-cpp//absl/strings",
     ] + envoy_select_google_grpc(["//source/common/grpc:google_grpc_creds_lib"]),
 )
 
