@@ -84,7 +84,13 @@ message GrpcService {
       option (udpa.annotations.versioning).previous_message_type =
           "envoy.api.v2.core.GrpcService.GoogleGrpc.SslCredentials";
 
-      // PEM encoded server root certificates.
+      // PEM encoded server root certificates. Any trust-anchor certificate in
+      // this bundle whose ``notAfter`` is in the past is silently dropped
+      // before the bundle is handed to the gRPC TLS stack. This avoids a
+      // case where the gRPC chain builder picks an expired duplicate of a
+      // renewed root (same Subject name, often same key) and fails the
+      // handshake. Validity-period enforcement on the remaining roots, the
+      // intermediate chain, and the leaf is unchanged.
       DataSource root_certs = 1;
 
       // PEM encoded client private key.
