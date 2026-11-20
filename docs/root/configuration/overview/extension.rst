@@ -40,12 +40,11 @@ management server<xds_protocol>` using :ref:`ExtensionConfiguration discovery
 service<envoy_v3_api_file_envoy/service/extension/v3/config_discovery.proto>`.
 The name field in the extension configuration acts as the resource identifier.
 
-Listener filters
-^^^^^^^^^^^^^^^^
+TCP listener filters
+^^^^^^^^^^^^^^^^^^^^
 
-For Listener filters, the discovery service configuration is: :ref:`dynamic listener filter
+For TCP listener filters, the discovery service configuration is: :ref:`dynamic listener filter
 re-configuration<envoy_v3_api_field_config.listener.v3.ListenerFilter.config_discovery>`.
-The dynamic listener filter config is only supported in TCP listeners.
 If the dynamic configuration is missing, the connection will be rejected until a valid config is updated.
 
 Network filters
@@ -64,6 +63,35 @@ For HTTP filters, HTTP connection manager supports :ref:`dynamic filter
 re-configuration<envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.HttpFilter.config_discovery>`.
 If the configuration is missing a local HTTP response with '500' status code will be returned.
 
+UDP listener filters
+^^^^^^^^^^^^^^^^^^^^
+
+Raw UDP listeners support ECDS through :ref:`listener filter
+configuration discovery<envoy_v3_api_field_config.listener.v3.ListenerFilter.config_discovery>`.
+An update replaces that filter's instances on each worker without rebinding the listening socket
+or recreating other filters. In particular, a static DNS fallback filter retains its pending
+queries during an update. Pending work owned by the replaced filter ends with that instance;
+filters must cancel their asynchronous work when destroyed.
+
+Missing required configuration drops datagrams before any filter in the chain runs and increments
+``listener.<stat_prefix>.udp.extension_config_missing``. A configured default is used after initial
+fetch failure or resource removal. Without a default, packets remain blocked until valid
+configuration arrives. Updates rejected during main-thread validation retain the last accepted
+configuration. Delta ECDS supports explicit resource removal; an empty state-of-the-world response
+is rejected and retains the current configuration.
+
+An ECDS ACK confirms main-thread validation and queuing of worker updates. It does not guarantee
+that every worker has applied the update: workers can briefly use different versions. The
+``extension_config_discovery.udp_listener_filter.<resource_name>.config_reload`` counter advances
+after all workers have processed the update, including failed construction attempts. Worker filter
+construction must succeed for the configuration to be usable: a construction failure drops subsequent datagrams on that worker and
+increments ``listener.<stat_prefix>.udp.extension_config_update_failed``. Recovery requires a changed
+typed configuration, removal followed by readdition, or listener recreation. Changing only the xDS
+version or nonce does not retry construction because identical typed configurations are deduplicated.
+Listener warming queues the initial configuration before worker listener creation, so initial
+reload completion can precede filter construction. On initial fetch failure, listener warming
+completes but required missing configuration continues to block packets.
+
 UDP Session filters
 ^^^^^^^^^^^^^^^^^^^
 
@@ -77,6 +105,7 @@ Statistics
 In addition to the :ref:`statistics<subscription_statistics>` supported for xDS subscriptions, the following statistics
 are supported for listener filters, downstream network filters, and HTTP filters, rooted at *extension_config_discovery.<stat_prefix>.<extension_config_name>*.
 
+- For UDP listener filters, the value of *<stat_prefix>* is *udp_listener_filter*.
 - For TCP listener filters, the value of *<stat_prefix>* is *tcp_listener_filter*.
 - For downstream network filters, the value of *<stat_prefix>* is *network_filter*.
 - For upstream network filters, the value of *<stat_prefix>* is *upstream_network_filter*.
@@ -88,7 +117,7 @@ are supported for listener filters, downstream network filters, and HTTP filters
   :header: Name, Type, Description
   :widths: 1, 1, 2
 
-  config_reload, Counter, Total number of successful configuration updates
+  config_reload, Counter, Total number of accepted configuration updates processed by all workers; this does not guarantee that UDP listener filter construction succeeded
   config_fail, Counter, Total number of failed configuration updates
   config_conflict, Counter, Total number of conflicting applications of configuration updates; this may happen when a new listener cannot reuse a subscribed extension configuration due to an invalid type URL.
 

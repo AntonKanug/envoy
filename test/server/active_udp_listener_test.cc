@@ -127,6 +127,37 @@ INSTANTIATE_TEST_SUITE_P(ActiveUdpListenerTests, ActiveUdpListenerTest,
                          testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
                          TestUtility::ipTestParamsToString);
 
+// A missing later filter must prevent an earlier filter from answering or forwarding packets.
+TEST_P(ActiveUdpListenerTest, MissingConfigurationBlocksEntireChain) {
+  class ConfigurableFilter : public Network::MockUdpListenerReadFilter {
+  public:
+    using Network::MockUdpListenerReadFilter::MockUdpListenerReadFilter;
+    bool isConfigReady() const override { return ready_; }
+    bool ready_{false};
+  };
+  setup();
+  auto first = std::make_unique<NiceMock<Network::MockUdpListenerReadFilter>>(cb_);
+  auto missing = std::make_unique<NiceMock<ConfigurableFilter>>(cb_);
+  auto* first_ptr = first.get();
+  auto* missing_ptr = missing.get();
+  active_listener_->addReadFilter(std::move(first));
+  active_listener_->addReadFilter(std::move(missing));
+  EXPECT_CALL(*first_ptr, onData(_)).Times(0);
+  EXPECT_CALL(*missing_ptr, onData(_)).Times(0);
+  EXPECT_CALL(*first_ptr, onReceiveError(_)).Times(0);
+  active_listener_->onDataWorker(makeRecvData(1000));
+  active_listener_->onReceiveError(Api::IoError::IoErrorCode::UnknownError);
+  EXPECT_EQ(1, scope_.counterFromString("udp.extension_config_missing").value());
+
+  testing::Mock::VerifyAndClearExpectations(first_ptr);
+  testing::Mock::VerifyAndClearExpectations(missing_ptr);
+  missing_ptr->ready_ = true;
+  EXPECT_CALL(*first_ptr, onData(_)).WillOnce(Return(Network::FilterStatus::Continue));
+  EXPECT_CALL(*missing_ptr, onData(_)).WillOnce(Return(Network::FilterStatus::Continue));
+  active_listener_->onDataWorker(makeRecvData(1000));
+  EXPECT_EQ(1, scope_.counterFromString("udp.extension_config_missing").value());
+}
+
 TEST_P(ActiveUdpListenerTest, MultipleFiltersOnData) {
   setup();
 

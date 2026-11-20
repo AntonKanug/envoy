@@ -19,7 +19,8 @@ envoy_cc_library(
         "//envoy/singleton:instance_interface",
         "//envoy/stats:stats_macros",
         "//envoy/thread_local:thread_local_interface",
-        "//source/common/common:containers_lib",
+        "//source/common/common:callback_impl_lib",
+        "//source/common/common:cleanup_lib",
         "//source/common/config:resource_type_helper_lib",
         "//source/common/config:utility_lib",
         "//source/common/grpc:common_lib",
@@ -30,5 +31,19 @@ envoy_cc_library(
         "//source/common/runtime:runtime_features_lib",
         "@envoy_api//envoy/admin/v3:pkg_cc_proto",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_library(
+    name = "udp_listener_filter_lib",
+    srcs = ["udp_listener_filter.cc"],
+    hdrs = ["udp_listener_filter.h"],
+    deps = [
+        "//envoy/common:callback",
+        "//envoy/common:exception_lib",
+        "//envoy/config:extension_config_provider_interface",
+        "//envoy/network:filter_interface",
+        "//envoy/stats:stats_interface",
+        "//source/common/common:logger_lib",
     ],
 )

@@ -6,7 +6,7 @@
 #include "envoy/http/filter.h"
 #include "envoy/server/filter_config.h"
 
-#include "source/common/common/containers.h"
+#include "source/common/common/cleanup.h"
 #include "source/common/common/thread.h"
 #include "source/common/grpc/common.h"
 #include "source/common/protobuf/utility.h"
@@ -17,6 +17,16 @@ namespace Envoy {
 namespace Filter {
 
 namespace {
+using PreparedConfigUpdate = DynamicFilterConfigProviderImplBase::PreparedConfigUpdate;
+
+void applyPreparedConfigUpdates(const std::vector<PreparedConfigUpdate>& updates,
+                                Config::ConfigAppliedCb complete) {
+  auto cleanup = std::make_shared<Cleanup>(std::move(complete));
+  for (const auto& update : updates) {
+    update([cleanup] {});
+  }
+}
+
 absl::Status validateTypeUrlHelper(const std::string& type_url,
                                    const absl::flat_hash_set<std::string> require_type_urls) {
   if (!require_type_urls.contains(type_url)) {
@@ -144,17 +154,21 @@ FilterConfigSubscription::onConfigUpdate(const std::vector<Config::DecodedResour
   for (auto* provider : filter_config_providers_) {
     provider->validateMessage(filter_config_name_, *next->config_, next->factory_name_);
   }
+  // Factory construction can also reject the configuration. Prepare every factory before
+  // updating the cached resource or publishing to any worker, including when providers share
+  // this subscription but use different factory contexts.
+  std::vector<PreparedConfigUpdate> updates;
+  updates.reserve(filter_config_providers_.size());
+  for (auto* provider : filter_config_providers_) {
+    auto prepared = provider->prepareConfigUpdate(*next->config_);
+    RETURN_IF_NOT_OK_REF(prepared.status());
+    updates.emplace_back(std::move(prepared.value()));
+  }
   ENVOY_LOG(debug, "Updated filter config {} accepted, posting to workers", filter_config_name_);
   // Update the latest subscription config first, to prevent a race with new
   // providers missing the latest config.
   last_ = std::move(next);
-  RETURN_IF_NOT_OK(Common::applyToAllWithCleanup<DynamicFilterConfigProviderImplBase*>(
-      filter_config_providers_,
-      [last = last_](DynamicFilterConfigProviderImplBase* provider,
-                     std::shared_ptr<Cleanup> cleanup) {
-        return provider->onConfigUpdate(*last->config_, last->version_info_, [cleanup] {});
-      },
-      [me = shared_from_this()]() { me->updateComplete(); }));
+  applyPreparedConfigUpdates(updates, [me = shared_from_this()]() { me->updateComplete(); });
   // The filter configs are created and published to worker queues at this point, so it
   // is safe to mark the subscription as ready and publish the warmed parent resources.
   ENVOY_LOG(debug, "Updated filter config {} created, warming done", filter_config_name_);
@@ -168,13 +182,18 @@ absl::Status FilterConfigSubscription::onConfigUpdate(
   if (!removed_resources.empty()) {
     ASSERT(removed_resources.size() == 1);
     ENVOY_LOG(debug, "Removing filter config {}", filter_config_name_);
+    std::vector<PreparedConfigUpdate> updates;
+    updates.reserve(filter_config_providers_.size());
+    for (auto* provider : filter_config_providers_) {
+      auto prepared = provider->prepareConfigRemoval();
+      RETURN_IF_NOT_OK_REF(prepared.status());
+      updates.emplace_back(std::move(prepared.value()));
+    }
     last_ = std::make_shared<ConfigVersion>("", factory_context_.timeSource().systemTime());
-    RETURN_IF_NOT_OK(Common::applyToAllWithCleanup<DynamicFilterConfigProviderImplBase*>(
-        filter_config_providers_,
-        [](DynamicFilterConfigProviderImplBase* provider, std::shared_ptr<Cleanup> cleanup) {
-          return provider->onConfigRemoved([cleanup] {});
-        },
-        [me = shared_from_this()]() { me->updateComplete(); }));
+    applyPreparedConfigUpdates(updates, [me = shared_from_this()]() { me->updateComplete(); });
+    // Removal can be the initial response. Consumers use their default config, or fail closed
+    // while config() is empty, instead of waiting forever after the initial fetch timer stops.
+    init_target_.ready();
   } else if (!added_resources.empty()) {
     ASSERT(added_resources.size() == 1);
     return onConfigUpdate(added_resources, added_resources[0].get().version());

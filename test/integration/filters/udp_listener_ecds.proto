@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package test.integration;
+
+import "validate/validate.proto";
+
+// Configuration for the raw UDP ECDS integration-test filter.
+message UdpListenerEcdsConfig {
+  string generation = 1 [(validate.rules).string = {min_len: 1}];
+  bool respond_to_probe = 2;
+}

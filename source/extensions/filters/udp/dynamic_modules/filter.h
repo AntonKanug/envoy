@@ -21,6 +21,7 @@ public:
   ~DynamicModuleUdpListenerFilter() override;
 
   // Network::UdpListenerReadFilter
+  bool isConfigReady() const override { return in_module_filter_ != nullptr; }
   Network::FilterStatus onData(Network::UdpRecvData& data) override;
   Network::FilterStatus onReceiveError(Api::IoError::IoErrorCode error_code) override;
 

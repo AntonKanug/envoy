@@ -130,6 +130,14 @@ void ActiveRawUdpListener::onDataWorker(Network::UdpRecvData&& data) {
     return;
   }
 
+  // Check the complete chain before an earlier filter can respond or forward the datagram.
+  for (const auto& filter : read_filters_) {
+    if (!filter->isConfigReady()) {
+      udp_stats_.extension_config_missing_.inc();
+      return;
+    }
+  }
+
   for (auto& read_filter : read_filters_) {
     Network::FilterStatus status = read_filter->onData(data);
     if (status == Network::FilterStatus::StopIteration) {
@@ -150,6 +158,11 @@ void ActiveRawUdpListener::onWriteReady(const Network::Socket&) {
 }
 
 void ActiveRawUdpListener::onReceiveError(Api::IoError::IoErrorCode error_code) {
+  for (const auto& filter : read_filters_) {
+    if (!filter->isConfigReady()) {
+      return;
+    }
+  }
   for (auto& read_filter : read_filters_) {
     Network::FilterStatus status = read_filter->onReceiveError(error_code);
     if (status == Network::FilterStatus::StopIteration) {

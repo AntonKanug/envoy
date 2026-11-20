@@ -16,6 +16,7 @@
 #include "envoy/stats/stats_macros.h"
 
 #include "source/common/common/assert.h"
+#include "source/common/common/callback_impl.h"
 #include "source/common/config/resource_type_helper.h"
 #include "source/common/config/utility.h"
 #include "source/common/init/manager_impl.h"
@@ -38,6 +39,10 @@ using FilterConfigSubscriptionSharedPtr = std::shared_ptr<FilterConfigSubscripti
  **/
 class DynamicFilterConfigProviderImplBase : public Config::DynamicExtensionConfigProviderBase {
 public:
+  // Prepare factories for every provider before publishing any of them. The returned callback
+  // must be applied on the main thread while the provider is alive.
+  using PreparedConfigUpdate = std::function<void(Config::ConfigAppliedCb)>;
+
   DynamicFilterConfigProviderImplBase(FilterConfigSubscriptionSharedPtr& subscription,
                                       const absl::flat_hash_set<std::string>& require_type_urls,
                                       bool last_filter_in_filter_chain,
@@ -49,6 +54,9 @@ public:
   absl::Status validateTypeUrl(const std::string& type_url) const;
   virtual void validateMessage(const std::string& config_name, const Protobuf::Message& message,
                                const std::string& factory_name) const PURE;
+  virtual absl::StatusOr<PreparedConfigUpdate>
+  prepareConfigUpdate(const Protobuf::Message& message) const PURE;
+  virtual absl::StatusOr<PreparedConfigUpdate> prepareConfigRemoval() const PURE;
 
   const std::string& name();
 
@@ -108,25 +116,45 @@ public:
     }
     return {};
   }
+  Common::CallbackHandlePtr addUpdateCallback(std::function<void()> callback) override {
+    return (*main_config_->tls_)->update_callbacks_.add(std::move(callback));
+  }
 
   // Config::DynamicExtensionConfigProviderBase
   absl::Status onConfigUpdate(const Protobuf::Message& message, const std::string&,
                               Config::ConfigAppliedCb applied_on_all_threads) override {
-    const absl::StatusOr<FactoryCb> config_or_error = instantiateFilterFactory(message);
-    RETURN_IF_NOT_OK_REF(config_or_error.status());
-    update(std::move(config_or_error.value()), applied_on_all_threads);
+    auto prepared = prepareConfigUpdate(message);
+    RETURN_IF_NOT_OK_REF(prepared.status());
+    prepared.value()(std::move(applied_on_all_threads));
     return absl::OkStatus();
   }
 
   absl::Status onConfigRemoved(Config::ConfigAppliedCb applied_on_all_threads) override {
+    auto prepared = prepareConfigRemoval();
+    RETURN_IF_NOT_OK_REF(prepared.status());
+    prepared.value()(std::move(applied_on_all_threads));
+    return absl::OkStatus();
+  }
+
+  absl::StatusOr<PreparedConfigUpdate>
+  prepareConfigUpdate(const Protobuf::Message& message) const override {
+    auto config_or_error = instantiateFilterFactory(message);
+    RETURN_IF_NOT_OK_REF(config_or_error.status());
+    return [this, config = std::move(config_or_error.value())](Config::ConfigAppliedCb applied) {
+      update(config, std::move(applied));
+    };
+  }
+
+  absl::StatusOr<PreparedConfigUpdate> prepareConfigRemoval() const override {
     std::optional<FactoryCb> cb;
     if (default_configuration_) {
       auto cb_or_error = instantiateFilterFactory(*default_configuration_);
       RETURN_IF_NOT_OK_REF(cb_or_error.status());
       cb = std::move(cb_or_error.value());
     }
-    update(cb, applied_on_all_threads);
-    return absl::OkStatus();
+    return [this, config = std::move(cb)](Config::ConfigAppliedCb applied) {
+      update(config, std::move(applied));
+    };
   }
 
   absl::Status applyDefaultConfiguration() override {
@@ -147,10 +175,14 @@ private:
   virtual absl::StatusOr<FactoryCb>
   instantiateFilterFactory(const Protobuf::Message& message) const PURE;
 
-  void update(std::optional<FactoryCb> config, Config::ConfigAppliedCb applied_on_all_threads) {
+  void update(std::optional<FactoryCb> config,
+              Config::ConfigAppliedCb applied_on_all_threads) const {
     // This call must not capture 'this' as it is invoked on all workers asynchronously.
     main_config_->tls_->runOnAllThreads(
-        [config](OptRef<ThreadLocalConfig> tls) { tls->config_ = config; },
+        [config](OptRef<ThreadLocalConfig> tls) {
+          tls->config_ = config;
+          tls->update_callbacks_.runCallbacks();
+        },
         [main_config = main_config_, config, applied_on_all_threads]() {
           // This happens after all workers have discarded the previous config so
           // it can be safely deleted on the main thread by an update with the new
@@ -165,6 +197,7 @@ private:
   struct ThreadLocalConfig : public ThreadLocal::ThreadLocalObject {
     ThreadLocalConfig() : config_{std::nullopt} {}
     std::optional<FactoryCb> config_{};
+    Common::CallbackManager<void> update_callbacks_;
   };
 
   // Currently applied configuration to ensure that the main thread deletes the last reference to

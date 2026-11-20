@@ -16,7 +16,9 @@
 namespace Envoy {
 namespace Server {
 
-#define ALL_UDP_LISTENER_STATS(COUNTER) COUNTER(downstream_rx_datagram_dropped)
+#define ALL_UDP_LISTENER_STATS(COUNTER)                                                            \
+  COUNTER(downstream_rx_datagram_dropped)                                                          \
+  COUNTER(extension_config_missing)
 
 /**
  * Wrapper struct for UDP listener stats. @see stats_macros.h

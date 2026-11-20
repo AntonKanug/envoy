@@ -1,4 +1,5 @@
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -43,7 +44,15 @@ class TestFilterFactory {
 public:
   virtual ~TestFilterFactory() = default;
 
+  void onCreate() {
+    created_ = true;
+    if (on_create_) {
+      on_create_();
+    }
+  }
+
   bool created_{false};
+  std::function<void()> on_create_;
 };
 
 class TestHttpFilterFactory : public TestFilterFactory,
@@ -53,15 +62,17 @@ public:
   absl::StatusOr<Http::FilterFactoryCb>
   createFilterFactoryFromProto(const Protobuf::Message&, const std::string& stat_prefix,
                                Server::Configuration::FactoryContext&) override {
-    created_ = true;
+    onCreate();
     stat_prefix_ = stat_prefix;
+    RETURN_IF_NOT_OK(status_);
     return [](Http::FilterChainFactoryCallbacks&) -> void {};
   }
   absl::StatusOr<Http::FilterFactoryCb>
   createFilterFactoryFromProto(const Protobuf::Message&, const std::string& stat_prefix,
                                Server::Configuration::UpstreamFactoryContext&) override {
-    created_ = true;
+    onCreate();
     stat_prefix_ = stat_prefix;
+    RETURN_IF_NOT_OK(status_);
     return [](Http::FilterChainFactoryCallbacks&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -74,6 +85,7 @@ public:
   }
 
   std::string stat_prefix_;
+  absl::Status status_;
 };
 
 class TestNetworkFilterFactory
@@ -84,13 +96,13 @@ public:
   absl::StatusOr<Network::FilterFactoryCb>
   createFilterFactoryFromProto(const Protobuf::Message&,
                                Server::Configuration::FactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::FilterManager&) -> void {};
   }
   Network::FilterFactoryCb
   createFilterFactoryFromProto(const Protobuf::Message&,
                                Server::Configuration::UpstreamFactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::FilterManager&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -110,7 +122,7 @@ public:
   createListenerFilterFactoryFromProto(const Protobuf::Message&,
                                        const Network::ListenerFilterMatcherSharedPtr&,
                                        Server::Configuration::ListenerFactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::ListenerFilterManager&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -126,7 +138,7 @@ public:
   Network::UdpListenerFilterFactoryCb
   createFilterFactoryFromProto(const Protobuf::Message&,
                                Server::Configuration::ListenerFactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::UdpListenerFilterManager&, Network::UdpReadFilterCallbacks&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -142,7 +154,7 @@ public:
   Network::UdpSessionFilterFactoryCb
   createFilterFactoryFromProto(const Protobuf::Message&,
                                Server::Configuration::FactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::UdpSessionFilterChainFactoryCallbacks&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -159,7 +171,7 @@ public:
   createListenerFilterFactoryFromProto(const Protobuf::Message&,
                                        const Network::ListenerFilterMatcherSharedPtr&,
                                        Server::Configuration::ListenerFactoryContext&) override {
-    created_ = true;
+    onCreate();
     return [](Network::QuicListenerFilterManager&) -> void {};
   }
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
@@ -245,13 +257,15 @@ public:
   }
 
   // Create a discovery response.
-  envoy::service::discovery::v3::DiscoveryResponse createResponse(std::string version,
-                                                                  std::string name) {
+  envoy::service::discovery::v3::DiscoveryResponse
+  createResponse(std::string version, std::string name, const std::string& value = "") {
     envoy::service::discovery::v3::DiscoveryResponse response;
     response.set_version_info(version);
     envoy::config::core::v3::TypedExtensionConfig extension_config;
     extension_config.set_name(name);
-    extension_config.mutable_typed_config()->set_type_url("type.googleapis.com/" + getTypeUrl());
+    Protobuf::StringValue config;
+    config.set_value(value);
+    std::ignore = extension_config.mutable_typed_config()->PackFrom(config);
     std::ignore = response.add_resources()->PackFrom(extension_config);
     return response;
   }
@@ -510,6 +524,245 @@ TYPED_TEST(FilterConfigDiscoveryImplTestParameter, ConfigFailed) {
   EXPECT_EQ(
       1UL,
       config_discovery_test.store_.counter(config_discovery_test.getConfigFailCounter()).value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, UpdateCallbacksRunBeforeCompletion) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  auto& reload =
+      config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter());
+  size_t updates = 0;
+  bool expect_config = true;
+  auto handle = config_discovery_test.provider_->addUpdateCallback([&]() {
+    EXPECT_EQ(expect_config, config_discovery_test.provider_->config().has_value());
+    EXPECT_EQ(updates, reload.value());
+    ++updates;
+  });
+  ASSERT_NE(nullptr, handle);
+
+  const auto response = config_discovery_test.createResponse("1", "foo");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+  EXPECT_EQ(1, updates);
+  EXPECT_EQ(1, reload.value());
+
+  expect_config = false;
+  Protobuf::RepeatedPtrField<std::string> removed;
+  removed.Add("foo");
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate({}, removed, "2"));
+  EXPECT_EQ(2, updates);
+  EXPECT_EQ(2, reload.value());
+
+  handle.reset();
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "3"));
+  EXPECT_EQ(2, updates);
+  EXPECT_EQ(3, reload.value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, WorkerApplicationFollowsAcceptance) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  bool applied = false;
+  auto handle = config_discovery_test.provider_->addUpdateCallback([&]() {
+    EXPECT_TRUE(config_discovery_test.provider_->config().has_value());
+    applied = true;
+  });
+  std::function<void()> worker_update;
+  std::function<void()> completion;
+  auto& tls = config_discovery_test.server_factory_context_.thread_local_;
+  EXPECT_CALL(tls, runOnAllThreads(_, _))
+      .WillOnce(Invoke([&](std::function<void()> update, std::function<void()> complete) {
+        worker_update = std::move(update);
+        completion = std::move(complete);
+      }))
+      .WillRepeatedly(Invoke(&tls, &ThreadLocal::MockInstance::runOnAllThreads2));
+
+  const auto response = config_discovery_test.createResponse("1", "foo");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+  auto& reload =
+      config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter());
+  EXPECT_FALSE(applied);
+  EXPECT_FALSE(config_discovery_test.provider_->config().has_value());
+  EXPECT_EQ(0, reload.value());
+
+  worker_update();
+  EXPECT_TRUE(applied);
+  EXPECT_EQ(0, reload.value());
+  completion();
+  completion = nullptr;
+  EXPECT_EQ(1, reload.value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, RemoveCallbackBeforeQueuedUpdate) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  auto handle = config_discovery_test.provider_->addUpdateCallback(
+      []() { ADD_FAILURE() << "Callback invoked after its handle was destroyed"; });
+  std::function<void()> worker_update;
+  std::function<void()> completion;
+  auto& tls = config_discovery_test.server_factory_context_.thread_local_;
+  EXPECT_CALL(tls, runOnAllThreads(_, _))
+      .WillOnce(Invoke([&](std::function<void()> update, std::function<void()> complete) {
+        worker_update = std::move(update);
+        completion = std::move(complete);
+      }))
+      .WillRepeatedly(Invoke(&tls, &ThreadLocal::MockInstance::runOnAllThreads2));
+
+  const auto response = config_discovery_test.createResponse("1", "foo");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+  handle.reset();
+  worker_update();
+  completion();
+  EXPECT_TRUE(config_discovery_test.provider_->config().has_value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, CallbackHandleSurvivesThreadLocalShutdown) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  auto handle = config_discovery_test.provider_->addUpdateCallback(
+      []() { ADD_FAILURE() << "Callback invoked during shutdown"; });
+  config_discovery_test.server_factory_context_.thread_local_.shutdownThread();
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  config_discovery_test.provider_.reset();
+  handle.reset();
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, RejectedFactoriesDoNotPublishOrCache) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  const auto provider2 = config_discovery_test.createProvider("foo", true, false);
+  size_t creations = 0;
+  config_discovery_test.filter_factory_.on_create_ = [&]() {
+    if (++creations % 2 == 0) {
+      throw EnvoyException("factory rejected config");
+    }
+  };
+
+  const auto response = config_discovery_test.createResponse("1", "foo");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  // The first provider prepares successfully, but the second rejects. Repeating the same
+  // rejected resource must still reject, rather than using the cached-resource hash shortcut.
+  for (size_t attempt = 0; attempt < 2; ++attempt) {
+    EXPECT_THROW_WITH_MESSAGE(
+        config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1").IgnoreError(),
+        EnvoyException, "factory rejected config");
+    EXPECT_FALSE(config_discovery_test.provider_->config().has_value());
+    EXPECT_FALSE(provider2->config().has_value());
+    EXPECT_EQ(0,
+              config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter())
+                  .value());
+  }
+  EXPECT_EQ(4, creations);
+
+  config_discovery_test.filter_factory_.on_create_ = nullptr;
+  const auto provider3 = config_discovery_test.createProvider("foo", true, false);
+  EXPECT_FALSE(provider3->config().has_value());
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+  EXPECT_TRUE(config_discovery_test.provider_->config().has_value());
+  EXPECT_TRUE(provider2->config().has_value());
+  EXPECT_TRUE(provider3->config().has_value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, RejectedUpdateRetainsPreviousResource) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup();
+  auto good = config_discovery_test.createResponse("1", "foo", "good");
+  const auto good_decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(good);
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(good_decoded.refvec_, "1"));
+  auto handle = config_discovery_test.provider_->addUpdateCallback(
+      []() { ADD_FAILURE() << "Rejected update replaced the previous configuration"; });
+  config_discovery_test.filter_factory_.on_create_ = []() {
+    throw EnvoyException("factory rejected config");
+  };
+  const auto bad = config_discovery_test.createResponse("2", "foo", "bad");
+  const auto bad_decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(bad);
+  EXPECT_THROW_WITH_MESSAGE(
+      config_discovery_test.callbacks_->onConfigUpdate(bad_decoded.refvec_, "2").IgnoreError(),
+      EnvoyException, "factory rejected config");
+  EXPECT_TRUE(config_discovery_test.provider_->config().has_value());
+  // The last accepted resource remains cached, so replaying it does not invoke the factory.
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(good_decoded.refvec_, "3"));
+  EXPECT_EQ(
+      1,
+      config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter()).value());
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, InitialRemovalCompletesWarming) {
+  for (bool default_config : {false, true}) {
+    TypeParam config_discovery_test;
+    config_discovery_test.setup(true, default_config);
+    Protobuf::RepeatedPtrField<std::string> removed;
+    removed.Add("foo");
+    EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+    ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate({}, removed, "1"));
+    EXPECT_EQ(default_config, config_discovery_test.provider_->config().has_value());
+  }
+}
+
+TYPED_TEST(FilterConfigDiscoveryImplTestParameter, RejectedDefaultDoesNotPartiallyRemove) {
+  TypeParam config_discovery_test;
+  config_discovery_test.setup(true, true);
+  const auto provider2 = config_discovery_test.createProvider("foo", true, true);
+  const auto response = config_discovery_test.createResponse("1", "foo", "good");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+
+  auto callback = []() { ADD_FAILURE() << "Rejected removal changed a provider"; };
+  auto handle1 = config_discovery_test.provider_->addUpdateCallback(callback);
+  auto handle2 = provider2->addUpdateCallback(callback);
+  size_t creations = 0;
+  config_discovery_test.filter_factory_.on_create_ = [&]() {
+    if (++creations == 2) {
+      throw EnvoyException("default factory rejected config");
+    }
+  };
+  Protobuf::RepeatedPtrField<std::string> removed;
+  removed.Add("foo");
+  EXPECT_THROW_WITH_MESSAGE(
+      config_discovery_test.callbacks_->onConfigUpdate({}, removed, "2").IgnoreError(),
+      EnvoyException, "default factory rejected config");
+  EXPECT_EQ(2, creations);
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "3"));
+  EXPECT_EQ(2, creations);
+  EXPECT_EQ(
+      1,
+      config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter()).value());
+}
+
+TEST(FilterConfigDiscoveryTest, FactoryStatusRejectionDoesNotCache) {
+  HttpFilterConfigDiscoveryImplTest config_discovery_test;
+  config_discovery_test.setup();
+  config_discovery_test.filter_factory_.status_ = absl::InvalidArgumentError("invalid factory");
+  const auto response = config_discovery_test.createResponse("1", "foo");
+  const auto decoded =
+      TestUtility::decodeResources<envoy::config::core::v3::TypedExtensionConfig>(response);
+  for (size_t attempt = 0; attempt < 2; ++attempt) {
+    EXPECT_EQ("invalid factory",
+              config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1").message());
+    EXPECT_FALSE(config_discovery_test.provider_->config().has_value());
+    EXPECT_EQ(0,
+              config_discovery_test.store_.counter(config_discovery_test.getConfigReloadCounter())
+                  .value());
+  }
+  config_discovery_test.filter_factory_.status_ = absl::OkStatus();
+  EXPECT_CALL(config_discovery_test.init_watcher_, ready());
+  ASSERT_OK(config_discovery_test.callbacks_->onConfigUpdate(decoded.refvec_, "1"));
+  EXPECT_TRUE(config_discovery_test.provider_->config().has_value());
 }
 
 TYPED_TEST(FilterConfigDiscoveryImplTestParameter, TooManyResources) {
