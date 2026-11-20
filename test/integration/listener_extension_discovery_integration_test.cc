@@ -904,12 +904,15 @@ TEST_P(QuicListenerExtensionDiscoveryIntegrationTest, BadEcdsUpdateWithoutDefaul
 
   // This is a bad config with empty value string.
   sendXdsResponse(filter_name_, "v1", "");
-  test_server_->waitForCounter(
-      "extension_config_discovery.quic_listener_filter." + filter_name_ + ".config_fail", Ge(1));
-  test_server_->waitForCounter(
-      "extension_config_discovery.quic_listener_filter." + filter_name_ + ".config_reload", Ge(1));
-  test_server_->waitUntilListenersReady();
-  test_server_->waitForGauge("listener_manager.workers_started", Ge(1));
+  ASSERT_NO_FATAL_FAILURE(test_server_->waitForCounter(
+      "extension_config_discovery.quic_listener_filter." + filter_name_ + ".config_fail", Ge(1)));
+  // A rejected factory does not publish a worker update.
+  EXPECT_EQ(0, test_server_
+                   ->counter("extension_config_discovery.quic_listener_filter." + filter_name_ +
+                             ".config_reload")
+                   ->value());
+  ASSERT_NO_FATAL_FAILURE(test_server_->waitUntilListenersReady());
+  ASSERT_NO_FATAL_FAILURE(test_server_->waitForGauge("listener_manager.workers_started", Ge(1)));
   EXPECT_EQ(test_server_->server().initManager().state(), Init::Manager::State::Initialized);
 
   Network::ClientConnectionPtr conn = makeClientConnection(lookupPort(port_name_));
@@ -922,11 +925,12 @@ TEST_P(QuicListenerExtensionDiscoveryIntegrationTest, BadEcdsUpdateWithoutDefaul
   EXPECT_EQ("QUIC_NO_ERROR with details: Closed by application with reason: no filter chain found",
             codec->connection()->transportFailureReason());
   // The extension_config_missing stats counter increases by 1.
-  test_server_->waitForCounter("listener.listener_stat.extension_config_missing", Ge(1));
+  ASSERT_NO_FATAL_FAILURE(
+      test_server_->waitForCounter("listener.listener_stat.extension_config_missing", Ge(1)));
 
   sendXdsResponse(filter_name_, "v2", "abc");
-  test_server_->waitForCounter(
-      "extension_config_discovery.quic_listener_filter." + filter_name_ + ".config_reload", Ge(2));
+  ASSERT_NO_FATAL_FAILURE(test_server_->waitForCounter(
+      "extension_config_discovery.quic_listener_filter." + filter_name_ + ".config_reload", Ge(1)));
   testRouterHeaderOnlyRequestAndResponse();
   codec_client_->close();
   std::string log = waitForAccessLog(access_log_name_, 0);

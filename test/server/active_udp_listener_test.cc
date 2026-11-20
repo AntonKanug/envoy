@@ -158,6 +158,26 @@ TEST_P(ActiveUdpListenerTest, MissingConfigurationBlocksEntireChain) {
   EXPECT_EQ(1, scope_.counterFromString("udp.extension_config_missing").value());
 }
 
+TEST_P(ActiveUdpListenerTest, DestroysFiltersBeforePacketWriter) {
+  class CleanupFilter : public Network::MockUdpListenerReadFilter {
+  public:
+    explicit CleanupFilter(TestActiveRawUdpListener& listener)
+        : MockUdpListenerReadFilter(listener), listener_(listener) {}
+    ~CleanupFilter() override { listener_.udpPacketWriter().setWritable(); }
+
+  private:
+    TestActiveRawUdpListener& listener_;
+  };
+  auto writer = std::make_unique<NiceMock<Network::MockUdpPacketWriter>>();
+  auto* writer_ptr = writer.get();
+  EXPECT_CALL(udp_packet_writer_factory_, createUdpPacketWriter(_, _, _, _))
+      .WillOnce(Return(testing::ByMove(std::move(writer))));
+  setup();
+  EXPECT_CALL(*writer_ptr, setWritable());
+  active_listener_->addReadFilter(std::make_unique<NiceMock<CleanupFilter>>(*active_listener_));
+  active_listener_.reset();
+}
+
 TEST_P(ActiveUdpListenerTest, MultipleFiltersOnData) {
   setup();
 

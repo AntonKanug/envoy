@@ -403,10 +403,10 @@ private:
   Network::UdpListener& listener_;
   Upstream::ClusterManager& cluster_manager_;
   DnsMessageParser message_parser_;
+  DnsFilterResolverCallback resolver_callback_;
   DnsFilterResolverPtr resolver_;
   Network::Address::InstanceConstSharedPtr local_;
   Network::Address::InstanceConstSharedPtr peer_;
-  DnsFilterResolverCallback resolver_callback_;
 };
 
 } // namespace DnsFilter

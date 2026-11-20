@@ -116,6 +116,12 @@ ActiveRawUdpListener::ActiveRawUdpListener(uint32_t worker_index, uint32_t concu
       /*on_can_write_cb=*/[]() {});
 }
 
+ActiveRawUdpListener::~ActiveRawUdpListener() {
+  // Filter cleanup may send packets or unregister sessions. Keep the listener, packet writer,
+  // and session registry alive until every filter has been destroyed.
+  read_filters_.clear();
+}
+
 void ActiveRawUdpListener::onDataWorker(Network::UdpRecvData&& data) {
   if (udp_listener_ == nullptr) {
     // Already shut down.

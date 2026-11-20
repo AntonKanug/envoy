@@ -80,6 +80,7 @@ public:
   ActiveRawUdpListener(uint32_t worker_index, uint32_t concurrency,
                        Network::UdpConnectionHandler& parent, Network::Socket& listen_socket,
                        Network::UdpListenerPtr&& listener, Network::ListenerConfig& config);
+  ~ActiveRawUdpListener() override;
 
   // Network::UdpListenerCallbacks
   void onReadReady() override;

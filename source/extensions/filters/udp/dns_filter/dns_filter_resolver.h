@@ -28,6 +28,7 @@ public:
         resolver_(THROW_OR_RETURN_VALUE(
             dns_resolver_factory.createDnsResolver(dispatcher, api, typed_dns_resolver_config),
             Network::DnsResolverSharedPtr)) {}
+  ~DnsFilterResolver();
   /**
    * @brief entry point to resolve the name in a DnsQueryRecord
    *
@@ -47,6 +48,7 @@ private:
     AddressConstPtrVec resolved_hosts;
     DnsFilterResolverStatus resolver_status;
     Event::TimerPtr timeout_timer;
+    Network::ActiveDnsQuery* active_query{};
   };
   /**
    * @brief invokes the DNS Filter callback only if our state indicates we have not timed out
@@ -71,10 +73,8 @@ private:
   absl::flat_hash_map<const DnsQueryRecord*, LookupContext> lookups_;
   uint64_t max_pending_lookups_;
 
-  // The order of members is important. If the lookups_'s destructor is called before the
-  // resolver_'s destructor and some c-ares queries were in progress, then the DnsFilterResolver's
-  // callback function may try to write to the lookups_ hash map, which could cause issues. To avoid
-  // this problem, the resolver_ should be destroyed before the lookups_.
+  // Cancel outstanding queries before releasing the resolver, whose destruction can invoke
+  // completion callbacks. A shared resolver may also outlive this filter.
   const Network::DnsResolverSharedPtr resolver_;
 };
 
