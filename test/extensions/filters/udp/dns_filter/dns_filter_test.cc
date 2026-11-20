@@ -773,6 +773,50 @@ TEST_F(DnsFilterTest, LocalTypeAAAAQuerySuccess) {
   EXPECT_EQ(1, config_->stats().aaaa_record_queries_.value());
 }
 
+TEST_F(DnsFilterTest, DestructionCancelsPendingExternalResolution) {
+  setup(forward_query_on_config);
+  auto timeout_timer = new NiceMock<Event::MockTimer>(&dispatcher_);
+  EXPECT_CALL(*timeout_timer, enableTimer(_, _));
+
+  testing::StrictMock<Network::MockActiveDnsQuery> active_query;
+  const std::string domain("www.foobaz.com");
+  EXPECT_CALL(*resolver_, resolve(domain, _, _)).WillOnce(Return(&active_query));
+  EXPECT_CALL(active_query, cancel(Network::ActiveDnsQuery::CancelReason::QueryAbandoned));
+  EXPECT_CALL(callbacks_.udp_listener_, send(_)).Times(0);
+
+  sendQueryFromClient("10.0.0.1:1000",
+                      Utils::buildQueryForDomain(domain, DNS_RECORD_TYPE_A, DNS_RECORD_CLASS_IN));
+  // The fixture retains the shared resolver, so cancellation cannot rely on resolver destruction.
+  filter_.reset();
+  EXPECT_EQ(0, config_->stats().downstream_tx_responses_.value());
+}
+
+TEST_F(DnsFilterTest, ExternalResolutionCompletesSynchronously) {
+  setup(forward_query_on_config);
+  auto timeout_timer = new NiceMock<Event::MockTimer>(&dispatcher_);
+  EXPECT_CALL(*timeout_timer, enableTimer(_, _));
+  EXPECT_CALL(*timeout_timer, disableTimer());
+  EXPECT_CALL(resolver_->active_query_, cancel(_)).Times(0);
+
+  const std::string domain("www.foobaz.com");
+  EXPECT_CALL(*resolver_, resolve(domain, _, _))
+      .WillOnce(Invoke([](const std::string&, Network::DnsLookupFamily,
+                          Network::DnsResolver::ResolveCb callback) -> Network::ActiveDnsQuery* {
+        callback(Network::DnsResolver::ResolutionStatus::Completed, "",
+                 TestUtility::makeDnsResponse({"130.207.244.251"}));
+        return nullptr;
+      }));
+
+  sendQueryFromClient("10.0.0.1:1000",
+                      Utils::buildQueryForDomain(domain, DNS_RECORD_TYPE_A, DNS_RECORD_CLASS_IN));
+  response_ctx_ = ResponseValidator::createResponseContext(udp_response_, counters_);
+  ASSERT_TRUE(response_ctx_->parse_status_);
+  EXPECT_EQ(DNS_RESPONSE_CODE_NO_ERROR, response_ctx_->getQueryResponseCode());
+  EXPECT_EQ(1, response_ctx_->answers_.size());
+  filter_.reset();
+  EXPECT_EQ(1, config_->stats().downstream_tx_responses_.value());
+}
+
 TEST_F(DnsFilterTest, ExternalResolutionReturnSingleAddress) {
   InSequence s;
 
@@ -782,6 +826,7 @@ TEST_F(DnsFilterTest, ExternalResolutionReturnSingleAddress) {
   const std::string expected_address("130.207.244.251");
   const std::string domain("www.foobaz.com");
   setup(forward_query_on_config);
+  EXPECT_CALL(resolver_->active_query_, cancel(_)).Times(0);
 
   const std::string query =
       Utils::buildQueryForDomain(domain, DNS_RECORD_TYPE_A, DNS_RECORD_CLASS_IN);
@@ -822,6 +867,7 @@ TEST_F(DnsFilterTest, ExternalResolutionReturnSingleAddress) {
   EXPECT_EQ(0, config_->stats().aaaa_record_queries_.value());
   EXPECT_EQ(0, config_->stats().unanswered_queries_.value());
 
+  filter_.reset();
   EXPECT_TRUE(Mock::VerifyAndClearExpectations(resolver_.get()));
 }
 
@@ -995,6 +1041,8 @@ TEST_F(DnsFilterTest, ExternalResolutionTimeout) {
   sendQueryFromClient("10.0.0.1:1000", query);
   simTime().advanceTimeWait(std::chrono::milliseconds(1500));
 
+  EXPECT_CALL(resolver_->active_query_, cancel(Network::ActiveDnsQuery::CancelReason::Timeout));
+
   // Execute timeout timer callback
   timeout_timer->invokeCallback();
 
@@ -1036,6 +1084,8 @@ TEST_F(DnsFilterTest, ExternalResolutionTimeout2) {
   // Send a query to for a name not in our configuration
   sendQueryFromClient("10.0.0.1:1000", query);
   simTime().advanceTimeWait(std::chrono::milliseconds(1500));
+
+  EXPECT_CALL(resolver_->active_query_, cancel(Network::ActiveDnsQuery::CancelReason::Timeout));
 
   // Execute timeout timer callback
   timeout_timer->invokeCallback();

@@ -37,6 +37,7 @@ public:
 TEST_F(DynamicModuleUdpListenerFilterTest, BasicDataFlow) {
   NiceMock<Network::MockUdpReadFilterCallbacks> callbacks;
   auto filter = std::make_unique<DynamicModuleUdpListenerFilter>(callbacks, filter_config_, 1);
+  EXPECT_TRUE(filter->isConfigReady());
 
   Network::UdpRecvData data;
   data.buffer_ = std::make_unique<Buffer::OwnedImpl>("hello");
@@ -103,8 +104,11 @@ TEST_F(DynamicModuleUdpListenerFilterTest, NullInModuleFilter) {
   data.buffer_ = std::make_unique<Buffer::OwnedImpl>("test");
   data.addresses_.peer_ = Network::Utility::parseInternetAddressAndPortNoThrow("1.2.3.4:1234");
 
-  // Should return Continue when in_module_filter is null.
-  EXPECT_EQ(Network::FilterStatus::Continue, filter->onData(data));
+  // A failed worker instance must not allow the static fallback to bypass this filter.
+  EXPECT_FALSE(filter->isConfigReady());
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration,
+            filter->onReceiveError(Api::IoError::IoErrorCode::UnknownError));
 }
 
 TEST_F(DynamicModuleUdpListenerFilterTest, EmptyBuffer) {

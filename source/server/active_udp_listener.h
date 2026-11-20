@@ -16,7 +16,9 @@
 namespace Envoy {
 namespace Server {
 
-#define ALL_UDP_LISTENER_STATS(COUNTER) COUNTER(downstream_rx_datagram_dropped)
+#define ALL_UDP_LISTENER_STATS(COUNTER)                                                            \
+  COUNTER(downstream_rx_datagram_dropped)                                                          \
+  COUNTER(extension_config_missing)
 
 /**
  * Wrapper struct for UDP listener stats. @see stats_macros.h
@@ -78,6 +80,7 @@ public:
   ActiveRawUdpListener(uint32_t worker_index, uint32_t concurrency,
                        Network::UdpConnectionHandler& parent, Network::Socket& listen_socket,
                        Network::UdpListenerPtr&& listener, Network::ListenerConfig& config);
+  ~ActiveRawUdpListener() override;
 
   // Network::UdpListenerCallbacks
   void onReadReady() override;

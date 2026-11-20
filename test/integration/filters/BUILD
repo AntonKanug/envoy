@@ -31,6 +31,11 @@ envoy_proto_library(
 )
 
 envoy_proto_library(
+    name = "udp_listener_ecds_proto",
+    srcs = ["udp_listener_ecds.proto"],
+)
+
+envoy_proto_library(
     name = "test_listener_filter_proto",
     srcs = ["test_listener_filter.proto"],
 )

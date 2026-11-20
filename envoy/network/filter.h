@@ -764,6 +764,12 @@ public:
  */
 class UdpListenerReadFilter {
 public:
+  /**
+   * Whether this filter has the configuration needed to process datagrams. The listener checks
+   * every filter before invoking any of them, so missing required ECDS configuration fails closed.
+   */
+  virtual bool isConfigReady() const { return true; }
+
   virtual ~UdpListenerReadFilter() = default;
 
   /**

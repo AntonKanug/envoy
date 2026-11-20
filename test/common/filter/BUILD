@@ -30,3 +30,15 @@ envoy_cc_test(
         "@envoy_api//envoy/service/discovery/v3:pkg_cc_proto",
     ],
 )
+
+envoy_cc_test(
+    name = "udp_listener_filter_test",
+    srcs = ["udp_listener_filter_test.cc"],
+    deps = [
+        "//envoy/common:exception_lib",
+        "//source/common/common:callback_impl_lib",
+        "//source/common/filter:udp_listener_filter_lib",
+        "//source/common/stats:isolated_store_lib",
+        "//test/mocks/network:network_mocks",
+    ],
+)

@@ -116,6 +116,12 @@ ActiveRawUdpListener::ActiveRawUdpListener(uint32_t worker_index, uint32_t concu
       /*on_can_write_cb=*/[]() {});
 }
 
+ActiveRawUdpListener::~ActiveRawUdpListener() {
+  // Filter cleanup may send packets or unregister sessions. Keep the listener, packet writer,
+  // and session registry alive until every filter has been destroyed.
+  read_filters_.clear();
+}
+
 void ActiveRawUdpListener::onDataWorker(Network::UdpRecvData&& data) {
   if (udp_listener_ == nullptr) {
     // Already shut down.
@@ -128,6 +134,14 @@ void ActiveRawUdpListener::onDataWorker(Network::UdpRecvData&& data) {
     non_dispatched_udp_packet_handler_->handle(
         worker_index_, *listen_socket_.connectionInfoProvider().localAddress(), std::move(data));
     return;
+  }
+
+  // Check the complete chain before an earlier filter can respond or forward the datagram.
+  for (const auto& filter : read_filters_) {
+    if (!filter->isConfigReady()) {
+      udp_stats_.extension_config_missing_.inc();
+      return;
+    }
   }
 
   for (auto& read_filter : read_filters_) {
@@ -150,6 +164,11 @@ void ActiveRawUdpListener::onWriteReady(const Network::Socket&) {
 }
 
 void ActiveRawUdpListener::onReceiveError(Api::IoError::IoErrorCode error_code) {
+  for (const auto& filter : read_filters_) {
+    if (!filter->isConfigReady()) {
+      return;
+    }
+  }
   for (auto& read_filter : read_filters_) {
     Network::FilterStatus status = read_filter->onReceiveError(error_code);
     if (status == Network::FilterStatus::StopIteration) {

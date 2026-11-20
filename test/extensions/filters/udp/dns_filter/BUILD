@@ -86,6 +86,31 @@ envoy_extension_cc_test(
 )
 
 envoy_extension_cc_test(
+    name = "udp_listener_extension_discovery_integration_test",
+    size = "large",
+    srcs = ["udp_listener_extension_discovery_integration_test.cc"],
+    extension_names = ["envoy.filters.udp.dns_filter"],
+    rbe_pool = "linux_x64_small",
+    deps = [
+        ":dns_filter_test_lib",
+        "//envoy/registry",
+        "//envoy/server:filter_config_interface",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/network:socket_lib",
+        "//source/common/protobuf:utility_lib",
+        "//source/extensions/filters/udp/dns_filter:config",
+        "//source/extensions/network/dns_resolver/cares:config",
+        "//test/integration:integration_lib",
+        "//test/integration/filters:udp_listener_ecds_proto_cc_proto",
+        "//test/test_common:network_utility_lib",
+        "@envoy_api//envoy/config/bootstrap/v3:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/filters/udp/dns_filter/v3:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/network/dns_resolver/cares/v3:pkg_cc_proto",
+        "@envoy_api//envoy/service/discovery/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_extension_cc_test(
     name = "dns_filter_access_log_integration_test",
     size = "large",
     srcs = ["dns_filter_access_log_integration_test.cc"],

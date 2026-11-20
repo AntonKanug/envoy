@@ -21,6 +21,7 @@
 #include "source/common/common/fmt.h"
 #include "source/common/common/thread.h"
 #include "source/common/config/utility.h"
+#include "source/common/filter/udp_listener_filter.h"
 #include "source/common/network/filter_matcher.h"
 #include "source/common/network/io_socket_handle_impl.h"
 #include "source/common/network/listen_socket_impl.h"
@@ -29,6 +30,7 @@
 #include "source/common/network/utility.h"
 #include "source/common/protobuf/utility.h"
 #include "source/common/runtime/runtime_features.h"
+#include "source/common/stats/symbol_table.h"
 
 #include "absl/strings/str_join.h"
 #include "absl/synchronization/blocking_counter.h"
@@ -194,7 +196,8 @@ ProdListenerComponentFactory::createListenerFilterFactoryListImpl(
 absl::StatusOr<std::vector<Network::UdpListenerFilterFactoryCb>>
 ProdListenerComponentFactory::createUdpListenerFilterFactoryListImpl(
     const Protobuf::RepeatedPtrField<envoy::config::listener::v3::ListenerFilter>& filters,
-    Configuration::ListenerFactoryContext& context) {
+    Configuration::ListenerFactoryContext& context,
+    Filter::UdpListenerFilterConfigProviderManagerImpl& config_provider_manager) {
   std::vector<Network::UdpListenerFilterFactoryCb> ret;
   for (ssize_t i = 0; i < filters.size(); i++) {
     const auto& proto_config = filters[i];
@@ -205,9 +208,34 @@ ProdListenerComponentFactory::createUdpListenerFilterFactoryListImpl(
                   static_cast<const Protobuf::Message&>(proto_config.typed_config())));
     if (proto_config.config_type_case() ==
         envoy::config::listener::v3::ListenerFilter::ConfigTypeCase::kConfigDiscovery) {
-      return absl::InvalidArgumentError(fmt::format("UDP listener filter: {} is configured with "
-                                                    "unsupported dynamic configuration",
-                                                    proto_config.name()));
+      const auto& discovery = proto_config.config_discovery();
+      if (discovery.apply_default_config_without_warming() && !discovery.has_default_config()) {
+        return absl::InvalidArgumentError(
+            fmt::format("Error: UDP listener filter config {} applied without warming but has no "
+                        "default config.",
+                        proto_config.name()));
+      }
+      for (const auto& type_url : discovery.type_urls()) {
+        const auto factory_type = TypeUtil::typeUrlToDescriptorFullName(type_url);
+        if (Registry::FactoryRegistry<Configuration::NamedUdpListenerFilterConfigFactory>::
+                getFactoryByType(factory_type) == nullptr) {
+          return absl::InvalidArgumentError(fmt::format(
+              "Error: no UDP listener factory found for a required type URL {}.", factory_type));
+        }
+      }
+      std::shared_ptr<Filter::FilterConfigProvider<Network::UdpListenerFilterFactoryCb>> provider =
+          config_provider_manager.createDynamicFilterConfigProvider(
+              discovery, proto_config.name(), context.serverFactoryContext(), context,
+              context.serverFactoryContext().clusterManager(), false, "udp-listener", nullptr, "");
+      Stats::StatNameManagedStorage failure_name("udp.extension_config_update_failed",
+                                                 context.listenerScope().symbolTable());
+      auto& update_failures = context.listenerScope().counterFromStatName(failure_name.statName());
+      ret.push_back([provider, &update_failures](Network::UdpListenerFilterManager& manager,
+                                                 Network::UdpReadFilterCallbacks& callbacks) {
+        manager.addReadFilter(
+            std::make_unique<Filter::UdpListenerFilter>(*provider, callbacks, update_failures));
+      });
+      continue;
     }
     // Now see if there is a factory that will accept the config.
     auto& factory =

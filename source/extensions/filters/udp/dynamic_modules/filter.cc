@@ -22,7 +22,7 @@ DynamicModuleUdpListenerFilter::~DynamicModuleUdpListenerFilter() {
 
 Network::FilterStatus DynamicModuleUdpListenerFilter::onData(Network::UdpRecvData& data) {
   if (in_module_filter_ == nullptr) {
-    return Network::FilterStatus::Continue;
+    return Network::FilterStatus::StopIteration;
   }
   current_data_ = &data;
   auto status = config_->on_filter_on_data_(thisAsVoidPtr(), in_module_filter_);
@@ -35,7 +35,7 @@ Network::FilterStatus DynamicModuleUdpListenerFilter::onData(Network::UdpRecvDat
 }
 
 Network::FilterStatus DynamicModuleUdpListenerFilter::onReceiveError(Api::IoError::IoErrorCode) {
-  return Network::FilterStatus::Continue;
+  return isConfigReady() ? Network::FilterStatus::Continue : Network::FilterStatus::StopIteration;
 }
 
 } // namespace DynamicModules
