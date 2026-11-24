@@ -12,6 +12,10 @@ import "C"
 // restating them and without growing.
 type dymCommonHandle struct{}
 
+func (dymCommonHandle) GetServerConcurrency() uint32 {
+	return uint32(C.envoy_dynamic_module_callback_get_concurrency())
+}
+
 func (dymCommonHandle) GetRuntimeBool(key string, defaultValue bool) bool {
 	return bool(C.envoy_dynamic_module_callback_get_runtime_bool(
 		stringToModuleBuffer(key), C.bool(defaultValue),

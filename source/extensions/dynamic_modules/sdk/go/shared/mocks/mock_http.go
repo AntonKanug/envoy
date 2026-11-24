@@ -2139,3 +2139,17 @@ func (mr *MockHttpFilterConfigHandleMockRecorder) SubscribeGenericSecret(name, s
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubscribeGenericSecret", reflect.TypeOf((*MockHttpFilterConfigHandle)(nil).SubscribeGenericSecret), name, sdsConfigSource)
 }
+
+// GetServerConcurrency mocks base method.
+func (m *MockHttpFilterConfigHandle) GetServerConcurrency() uint32 {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetServerConcurrency")
+	ret0, _ := ret[0].(uint32)
+	return ret0
+}
+
+// GetServerConcurrency indicates an expected call of GetServerConcurrency.
+func (mr *MockHttpFilterConfigHandleMockRecorder) GetServerConcurrency() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServerConcurrency", reflect.TypeOf((*MockHttpFilterConfigHandle)(nil).GetServerConcurrency))
+}

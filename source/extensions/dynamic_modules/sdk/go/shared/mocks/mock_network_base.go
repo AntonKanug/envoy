@@ -1101,3 +1101,17 @@ func (mr *MockNetworkFilterConfigHandleMockRecorder) SetGaugeValue(id, value any
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetGaugeValue", reflect.TypeOf((*MockNetworkFilterConfigHandle)(nil).SetGaugeValue), id, value)
 }
+
+// GetServerConcurrency mocks base method.
+func (m *MockNetworkFilterConfigHandle) GetServerConcurrency() uint32 {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetServerConcurrency")
+	ret0, _ := ret[0].(uint32)
+	return ret0
+}
+
+// GetServerConcurrency indicates an expected call of GetServerConcurrency.
+func (mr *MockNetworkFilterConfigHandleMockRecorder) GetServerConcurrency() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetServerConcurrency", reflect.TypeOf((*MockNetworkFilterConfigHandle)(nil).GetServerConcurrency))
+}
